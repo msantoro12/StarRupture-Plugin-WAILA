@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -73,6 +74,38 @@ namespace Waila
 		};
 
 		Cache g_cache;
+
+		// WailaRailProbe: temporary diagnostic. What the last scan saw, as text,
+		// logged once each time the looked-at rail changes.
+		std::string ProbeActor(AActor* actor)
+		{
+			if (!actor)
+				return "null";
+			if (!UKismetSystemLibrary::IsValid(actor))
+				return "invalid";
+			return (actor->Class ? actor->Class->GetName() : std::string("?")) + "/" + actor->GetName();
+		}
+
+		struct Probe
+		{
+			int32_t                    railsInWorld    = 0;
+			int32_t                    craftersInWorld = 0;
+			size_t                     railsVisited    = 0;
+			std::map<std::string, int> nodeClasses;
+			std::string                sources;
+			int32_t                    attached        = 0;
+			int32_t                    noRecipe        = 0;
+
+			// The log line is capped at 1 KB, so only the first few are named.
+			void AddSource(AActor* crafter, bool atEnd, const std::string& what)
+			{
+				if (++attached <= 6)
+					sources += " " + ProbeActor(crafter) + (atEnd ? "(end)=" : "(near)=") + what;
+			}
+		};
+
+		Probe g_probe;
+		const AActor* g_probeRail = nullptr;
 
 		// Items per minute of one crafter, from the recipe it is working on.
 		// full = output count / BuildTime x CraftingSpeed x 60.
@@ -155,6 +188,8 @@ namespace Waila
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrDronePathPointConnection::StaticClass(), &all);
 
+			g_probe.railsInWorld = all.Num();
+
 			std::unordered_map<const AActor*, std::vector<ACrDronePathPointConnection*>> byEnd;
 			for (int32_t i = 0; i < all.Num(); ++i)
 			{
@@ -189,6 +224,8 @@ namespace Waila
 					if (!UKismetSystemLibrary::IsValid(node))
 						continue;
 
+					++g_probe.nodeClasses[node->Class ? node->Class->GetName() : "?"];
+
 					if (node->IsA(ACrCrafter::StaticClass()))
 					{
 						outDirect.insert(node);
@@ -215,6 +252,8 @@ namespace Waila
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
+
+			g_probe.craftersInWorld = all.Num();
 
 			const double radiusSq = kAttachRadius * kAttachRadius;
 			std::unordered_map<std::string, size_t> index;
@@ -248,9 +287,14 @@ namespace Waila
 
 				// No recipe means no item to attribute anything to.
 				if (!item)
+				{
+					++g_probe.noRecipe;
+					g_probe.AddSource(crafter, direct.count(crafter) != 0, "no-recipe");
 					continue;
+				}
 
 				const std::string key = item->UniqueItemName.ToString();
+				g_probe.AddSource(crafter, direct.count(crafter) != 0, key);
 
 				if (out.sourceCount >= static_cast<int32_t>(kMaxSources))
 				{
@@ -343,6 +387,7 @@ namespace Waila
 
 			g_cache = Cache{};
 			g_cache.stamp = now;
+			g_probe = Probe{};
 
 			std::vector<FVector> poles;
 			std::unordered_set<const AActor*> direct;
@@ -352,6 +397,22 @@ namespace Waila
 			// Biggest flows first, so a cut-off list drops the smallest.
 			std::stable_sort(g_cache.tallies.begin(), g_cache.tallies.end(),
 				[](const Tally& a, const Tally& b) { return a.maxPerMin > b.maxPerMin; });
+
+			g_probe.railsVisited = g_cache.members.size();
+		}
+
+		if (g_probeRail != actor)
+		{
+			g_probeRail = actor;
+
+			std::string nodes;
+			for (const auto& [cls, n] : g_probe.nodeClasses)
+				nodes += " " + cls + "x" + std::to_string(n);
+
+			LOG_INFO("WailaRailProbe: rail=%s start=%s end=%s | rails world=%d visited=%zu | nodes:%s | crafters world=%d attached=%d noRecipe=%d | sources:%s",
+				ProbeActor(actor).c_str(), ProbeActor(rail->ConnectedStartActor).c_str(), ProbeActor(rail->ConnectedEndActor).c_str(),
+				g_probe.railsInWorld, g_probe.railsVisited, nodes.empty() ? " none" : nodes.c_str(),
+				g_probe.craftersInWorld, g_probe.attached, g_probe.noRecipe, g_probe.sources.empty() ? " none" : g_probe.sources.c_str());
 		}
 
 		outInfo.truncated = g_cache.truncated;
@@ -385,5 +446,7 @@ namespace Waila
 	void RailDetector::Reset()
 	{
 		g_cache = Cache{};
+		g_probe = Probe{};
+		g_probeRail = nullptr;
 	}
 }
