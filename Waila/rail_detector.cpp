@@ -95,6 +95,8 @@ namespace Waila
 			std::string                sources;
 			int32_t                    attached        = 0;
 			int32_t                    noRecipe        = 0;
+			int32_t                    nullEnds        = 0;
+			int32_t                    invalidEnds     = 0;
 
 			// The log line is capped at 1 KB, so only the first few are named.
 			void AddSource(AActor* crafter, bool atEnd, const std::string& what)
@@ -105,7 +107,72 @@ namespace Waila
 		};
 
 		Probe g_probe;
-		const AActor* g_probeRail = nullptr;
+
+		// Rails here are only compared by address, never dereferenced. A line is
+		// logged once the crosshair has rested on a rail for kProbeDwell, so a
+		// junction that flips between two rails does not log every frame.
+		constexpr std::chrono::milliseconds kProbeDwell{ 1000 };
+		const AActor*                         g_probeRail   = nullptr;
+		const AActor*                         g_probeLogged = nullptr;
+		std::chrono::steady_clock::time_point g_probeSince{};
+
+		// The crafter closest to a point, as "Class/Name@12.3m", whether or not it
+		// is attached. Settles whether a rail end sits at a building with no actor.
+		std::string ProbeNearestCrafter(const TArray<AActor*>& crafters, const FVector& at)
+		{
+			AActor* best = nullptr;
+			double  bestSq = 0.0;
+			for (int32_t i = 0; i < crafters.Num(); ++i)
+			{
+				AActor* c = crafters[i];
+				if (!c || !UKismetSystemLibrary::IsValid(c))
+					continue;
+				const FVector p = c->K2_GetActorLocation();
+				const double dx = p.X - at.X, dy = p.Y - at.Y, dz = p.Z - at.Z;
+				const double sq = dx * dx + dy * dy + dz * dz;
+				if (!best || sq < bestSq)
+				{
+					best   = c;
+					bestSq = sq;
+				}
+			}
+			if (!best)
+				return "none";
+
+			char buf[32];
+			snprintf(buf, sizeof(buf), "@%.1fm", std::sqrt(bestSq) / 100.0);
+			return ProbeActor(best) + buf;
+		}
+
+		void ProbeLog(UWorld* world, ACrDronePathPointConnection* rail, const std::string& filter)
+		{
+			std::string nearStart = "?", nearEnd = "?";
+			USplineComponent* spline = rail->Spline;
+			if (world && spline && UKismetSystemLibrary::IsValid(spline))
+			{
+				const int32_t points = spline->GetNumberOfSplinePoints();
+				if (points > 0)
+				{
+					TArray<AActor*> crafters{};
+					UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &crafters);
+					nearStart = ProbeNearestCrafter(crafters, spline->GetLocationAtSplinePoint(0, ESplineCoordinateSpace::World));
+					nearEnd   = ProbeNearestCrafter(crafters, spline->GetLocationAtSplinePoint(points - 1, ESplineCoordinateSpace::World));
+				}
+			}
+
+			std::string nodes;
+			for (const auto& [cls, n] : g_probe.nodeClasses)
+				nodes += " " + cls + "x" + std::to_string(n);
+
+			LOG_INFO("WailaRailProbe: rail=%s filter=%s start=%s end=%s nearStart=%s nearEnd=%s | sources:%s | attached=%d noRecipe=%d crafters=%d | rails=%d visited=%zu nullEnds=%d invalidEnds=%d | nodes:%s",
+				ProbeActor(rail).c_str(), filter.empty() ? "any" : filter.c_str(),
+				ProbeActor(rail->ConnectedStartActor).c_str(), ProbeActor(rail->ConnectedEndActor).c_str(),
+				nearStart.c_str(), nearEnd.c_str(),
+				g_probe.sources.empty() ? " none" : g_probe.sources.c_str(),
+				g_probe.attached, g_probe.noRecipe, g_probe.craftersInWorld,
+				g_probe.railsInWorld, g_probe.railsVisited, g_probe.nullEnds, g_probe.invalidEnds,
+				nodes.empty() ? " none" : nodes.c_str());
+		}
 
 		// Items per minute of one crafter, from the recipe it is working on.
 		// full = output count / BuildTime x CraftingSpeed x 60.
@@ -212,7 +279,12 @@ namespace Waila
 
 				for (AActor* node : ends)
 				{
-					if (!node || !seenNodes.insert(node).second)
+					if (!node)
+					{
+						++g_probe.nullEnds;
+						continue;
+					}
+					if (!seenNodes.insert(node).second)
 						continue;
 
 					if (seenNodes.size() > kMaxNodes)
@@ -222,7 +294,10 @@ namespace Waila
 					}
 
 					if (!UKismetSystemLibrary::IsValid(node))
+					{
+						++g_probe.invalidEnds;
 						continue;
+					}
 
 					++g_probe.nodeClasses[node->Class ? node->Class->GetName() : "?"];
 
@@ -264,7 +339,8 @@ namespace Waila
 				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
 					continue;
 
-				bool attached = direct.count(crafter) != 0;
+				const bool atEnd = direct.count(crafter) != 0;
+				bool attached = atEnd;
 				if (!attached)
 				{
 					const FVector at = crafter->K2_GetActorLocation();
@@ -289,12 +365,12 @@ namespace Waila
 				if (!item)
 				{
 					++g_probe.noRecipe;
-					g_probe.AddSource(crafter, direct.count(crafter) != 0, "no-recipe");
+					g_probe.AddSource(crafter, atEnd, "no-recipe");
 					continue;
 				}
 
 				const std::string key = item->UniqueItemName.ToString();
-				g_probe.AddSource(crafter, direct.count(crafter) != 0, key);
+				g_probe.AddSource(crafter, atEnd, key);
 
 				if (out.sourceCount >= static_cast<int32_t>(kMaxSources))
 				{
@@ -403,16 +479,13 @@ namespace Waila
 
 		if (g_probeRail != actor)
 		{
-			g_probeRail = actor;
-
-			std::string nodes;
-			for (const auto& [cls, n] : g_probe.nodeClasses)
-				nodes += " " + cls + "x" + std::to_string(n);
-
-			LOG_INFO("WailaRailProbe: rail=%s start=%s end=%s | rails world=%d visited=%zu | nodes:%s | crafters world=%d attached=%d noRecipe=%d | sources:%s",
-				ProbeActor(actor).c_str(), ProbeActor(rail->ConnectedStartActor).c_str(), ProbeActor(rail->ConnectedEndActor).c_str(),
-				g_probe.railsInWorld, g_probe.railsVisited, nodes.empty() ? " none" : nodes.c_str(),
-				g_probe.craftersInWorld, g_probe.attached, g_probe.noRecipe, g_probe.sources.empty() ? " none" : g_probe.sources.c_str());
+			g_probeRail  = actor;
+			g_probeSince = now;
+		}
+		else if (g_probeLogged != actor && now - g_probeSince >= kProbeDwell)
+		{
+			g_probeLogged = actor;
+			ProbeLog(UWorld::GetWorld(), rail, filterUnique);
 		}
 
 		outInfo.truncated = g_cache.truncated;
@@ -447,6 +520,7 @@ namespace Waila
 	{
 		g_cache = Cache{};
 		g_probe = Probe{};
-		g_probeRail = nullptr;
+		g_probeRail   = nullptr;
+		g_probeLogged = nullptr;
 	}
 }
