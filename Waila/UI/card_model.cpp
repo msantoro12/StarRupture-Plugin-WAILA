@@ -297,6 +297,10 @@ namespace Waila::UI
 			if (v < 0.0f)
 				return "?";
 
+			// FormatNumber would round a slow trickle down to "0".
+			if (v > 0.0f && v < 0.05f)
+				return "<0.1";
+
 			char buf[24];
 			Draw::FormatNumber(buf, sizeof(buf), v);
 			return buf;

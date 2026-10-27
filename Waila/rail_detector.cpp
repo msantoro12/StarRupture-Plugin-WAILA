@@ -1,12 +1,15 @@
 #include "rail_detector.h"
 #include "plugin_helpers.h"
+#include "waila_functions.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
 #include "AuCrafting_classes.hpp"
 #include "AuCrafting_structs.hpp"
 #include "AuItems_classes.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,12 +24,20 @@ namespace Waila
 		// Bounds for the network scan. Both stop a runaway fill and set
 		// RailInfo::truncated when they bite.
 		constexpr size_t kMaxNodes   = 256;
-		constexpr size_t kMaxSources = 64;
+		constexpr size_t kMaxSources = 256;
 
-		// How far from a network node a building can sit and still count as fed by
-		// it, in unreal units (1200 = 12 m). INFERRED: the SDK has no explicit link
-		// between a building and a drone path point, so proximity stands in for it,
-		// the way cargo_sender_detector matches a sender by distance.
+		// INFERRED, as is everything about which buildings a rail serves: the SDK
+		// has no explicit building-to-rail link. ConnectedStartActor and
+		// ConnectedEndActor are plain AActor*, and the rail mass spawner snaps rail
+		// ends to a building's logistics socket, so an end actor is either a
+		// building (counted directly, and the fill stops there) or a pole. Poles
+		// also pick up crafters within kAttachRadius (unreal units, 1200 = 12 m),
+		// the way cargo_sender_detector matches a sender by distance. A building
+		// that only consumes from the rail cannot be told apart from one that feeds it.
+		//
+		// Only actors the game has spawned are visible to GetAllActorsOfClass, and
+		// player buildings are streamed in around the camera (INFERRED), so a long
+		// rail can be cut short without `truncated` being set.
 		constexpr double kAttachRadius = 1200.0;
 
 		constexpr std::chrono::milliseconds kRefresh{ 1000 };
@@ -35,19 +46,26 @@ namespace Waila
 		struct Tally
 		{
 			FWeakObjectPtr item;
+			std::string    uniqueName;
 			std::string    displayName;
+			int32_t        sources   = 0;
 			float          nowPerMin = 0.0f;
 			float          maxPerMin = 0.0f;
-			bool           known     = true;   // false once any source's rate could not be read
+			bool           maxKnown  = true;   // false once any source's full rate could not be read
+			bool           nowKnown  = true;   // false once any source's state could not be read
 		};
 
 		// Everything the card shows, kept between refreshes. Item data is held as a
 		// weak pointer and resolved on use. `rail` is only ever compared, never
 		// dereferenced: a recycled address could at worst show the previous rail's
 		// numbers until the next refresh.
+		//
+		// The tallies cover every item on the whole network, and `members` is the set
+		// of rails the scan reached. Looking at another rail of the same network
+		// reuses the cache, so sweeping the crosshair along a run does not rescan.
 		struct Cache
 		{
-			const AActor*                         rail = nullptr;
+			std::unordered_set<const AActor*>     members;
 			std::chrono::steady_clock::time_point stamp{};
 			int32_t                               sourceCount = 0;
 			bool                                  truncated   = false;
@@ -58,6 +76,9 @@ namespace Waila
 
 		// Items per minute of one crafter, from the recipe it is working on.
 		// full = output count / BuildTime x CraftingSpeed x 60.
+		// CraftingSpeed is the live one from the crafting fragment, falling back to
+		// the class default. CraftingMultiplier is left out (INFERRED: it sets how
+		// many are requested, not how fast they are made).
 		// outItem is set whenever there is a recipe; the return value is false when
 		// the rate itself can't be worked out.
 		bool CrafterFullRate(ACrCrafter* crafter, UAuItemDataBase*& outItem, float& outFull)
@@ -79,15 +100,31 @@ namespace Waila
 			if (!outItem || count <= 0 || recipe->BuildTime <= 0.0f)
 				return false;
 
-			outFull = static_cast<float>(count) / recipe->BuildTime * crafter->CraftingSettings.CraftingSpeed * 60.0f;
+			float speed = crafter->CraftingSettings.CraftingSpeed;
+			if (auto fnGetFrag = Waila::Functions::GetCraftingFragment())
+			{
+				if (const FCrCraftingFragment* frag = fnGetFrag(comp))
+					speed = frag->CraftingSpeed;
+			}
+			if (!(speed > 0.0f) || !std::isfinite(speed))
+				return false;
+
+			outFull = static_cast<float>(count) / recipe->BuildTime * speed * 60.0f;
 			return true;
 		}
 
-		// Whether the crafter is producing right now. Any of these flags stalls it.
-		// LowElectricity is left out: INFERRED to slow a machine rather than stop
-		// it, and no slowdown factor is exposed.
-		bool CrafterRunning(ACrCrafter* crafter)
+		// Whether the crafter is producing right now: the game's own building state
+		// says it is working, and none of the stalling flags is set. Inefficient
+		// counts as working, and LowElectricity is left out: INFERRED to slow a
+		// machine rather than stop it, with no slowdown factor exposed.
+		// Returns false in `known` when the state could not be read.
+		bool CrafterRunning(ACrCrafter* crafter, bool& known)
 		{
+			const ECrBuildingState state = crafter->GetBuildingState();
+			known = state != ECrBuildingState::Unknown;
+			if (state != ECrBuildingState::Working && state != ECrBuildingState::Inefficient)
+				return false;
+
 			static constexpr ECrBuildingMalfunctionFlags kStalls[] = {
 				ECrBuildingMalfunctionFlags::Disabled,
 				ECrBuildingMalfunctionFlags::NoElectricity,
@@ -107,9 +144,13 @@ namespace Waila
 
 		// Flood fill over the rail segments, from the looked-at one outwards. Rails
 		// meet at their end actors, so two rails are neighbours when they share one.
-		// Fills outNodes with the position of every end actor reached.
+		// A crafter at an end is a source and the fill does not continue through it,
+		// or a factory's input and output rails would merge into one network.
+		// Fills outPoles with the position of every other end actor reached,
+		// outDirect with the crafters, and outRails with the rails visited.
 		void CollectNetwork(UWorld* world, ACrDronePathPointConnection* start,
-		                    std::vector<FVector>& outNodes, bool& outTruncated)
+		                    std::vector<FVector>& outPoles, std::unordered_set<const AActor*>& outDirect,
+		                    std::unordered_set<const AActor*>& outRails, bool& outTruncated)
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrDronePathPointConnection::StaticClass(), &all);
@@ -125,7 +166,8 @@ namespace Waila
 			}
 
 			std::unordered_set<const AActor*> seenNodes;
-			std::unordered_set<const AActor*> seenRails{ start };
+			std::unordered_set<const AActor*>& seenRails = outRails;
+			seenRails.insert(start);
 			std::vector<ACrDronePathPointConnection*> queue{ start };
 
 			for (size_t head = 0; head < queue.size(); ++head)
@@ -144,8 +186,15 @@ namespace Waila
 						return;
 					}
 
-					if (UKismetSystemLibrary::IsValid(node))
-						outNodes.push_back(node->K2_GetActorLocation());
+					if (!UKismetSystemLibrary::IsValid(node))
+						continue;
+
+					if (node->IsA(ACrCrafter::StaticClass()))
+					{
+						outDirect.insert(node);
+						continue;
+					}
+					outPoles.push_back(node->K2_GetActorLocation());
 
 					auto it = byEnd.find(node);
 					if (it == byEnd.end())
@@ -159,10 +208,10 @@ namespace Waila
 			}
 		}
 
-		// Crafters near the network, summed per output item. A rail with a filter
-		// only counts the sources that make that item.
-		void CollectSources(UWorld* world, const std::vector<FVector>& nodes,
-		                    const std::string& filterUnique, Cache& out)
+		// Crafters on the network, summed per output item. Stations, storage and
+		// receivers hold stock but have no production rate, so they are not sources.
+		void CollectSources(UWorld* world, const std::vector<FVector>& poles,
+		                    const std::unordered_set<const AActor*>& direct, Cache& out)
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
@@ -176,15 +225,18 @@ namespace Waila
 				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
 					continue;
 
-				const FVector at = crafter->K2_GetActorLocation();
-				bool attached = false;
-				for (const FVector& n : nodes)
+				bool attached = direct.count(crafter) != 0;
+				if (!attached)
 				{
-					const double dx = at.X - n.X, dy = at.Y - n.Y, dz = at.Z - n.Z;
-					if (dx * dx + dy * dy + dz * dz <= radiusSq)
+					const FVector at = crafter->K2_GetActorLocation();
+					for (const FVector& n : poles)
 					{
-						attached = true;
-						break;
+						const double dx = at.X - n.X, dy = at.Y - n.Y, dz = at.Z - n.Z;
+						if (dx * dx + dy * dy + dz * dz <= radiusSq)
+						{
+							attached = true;
+							break;
+						}
 					}
 				}
 				if (!attached)
@@ -199,8 +251,6 @@ namespace Waila
 					continue;
 
 				const std::string key = item->UniqueItemName.ToString();
-				if (!filterUnique.empty() && key != filterUnique)
-					continue;
 
 				if (out.sourceCount >= static_cast<int32_t>(kMaxSources))
 				{
@@ -216,20 +266,28 @@ namespace Waila
 					Tally t;
 					t.item.ObjectIndex        = item->Index;
 					t.item.ObjectSerialNumber = 0;
+					t.uniqueName  = key;
 					t.displayName = UKismetTextLibrary::Conv_TextToString(item->ItemName).ToString();
 					out.tallies.push_back(std::move(t));
 				}
 				Tally& t = out.tallies[found->second];
 
+				++t.sources;
+
 				if (!readable)
 				{
-					t.known = false;
+					t.maxKnown = false;
+					t.nowKnown = false;
 					continue;
 				}
 
 				t.maxPerMin += full;
-				if (CrafterRunning(crafter))
+
+				bool stateKnown = false;
+				if (CrafterRunning(crafter, stateKnown))
 					t.nowPerMin += full;
+				else if (!stateKnown)
+					t.nowKnown = false;
 			}
 		}
 	}
@@ -273,27 +331,39 @@ namespace Waila
 			filterUnique       = filter->UniqueItemName.ToString();
 		}
 
+		// Rails are only compared by address here, never dereferenced. With actor
+		// pooling an address can come back as a different rail, which shows the old
+		// network's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
-		if (g_cache.rail != actor || now - g_cache.stamp >= kRefresh)
+		if (g_cache.members.count(actor) == 0 || now - g_cache.stamp >= kRefresh)
 		{
 			UWorld* world = UWorld::GetWorld();
 			if (!world)
 				return true;
 
 			g_cache = Cache{};
-			g_cache.rail  = actor;
 			g_cache.stamp = now;
 
-			std::vector<FVector> nodes;
-			CollectNetwork(world, rail, nodes, g_cache.truncated);
-			CollectSources(world, nodes, filterUnique, g_cache);
+			std::vector<FVector> poles;
+			std::unordered_set<const AActor*> direct;
+			CollectNetwork(world, rail, poles, direct, g_cache.members, g_cache.truncated);
+			CollectSources(world, poles, direct, g_cache);
+
+			// Biggest flows first, so a cut-off list drops the smallest.
+			std::stable_sort(g_cache.tallies.begin(), g_cache.tallies.end(),
+				[](const Tally& a, const Tally& b) { return a.maxPerMin > b.maxPerMin; });
 		}
 
-		outInfo.sourceCount = g_cache.sourceCount;
-		outInfo.truncated   = g_cache.truncated;
+		outInfo.truncated = g_cache.truncated;
 
+		// A filtered rail only carries that item.
 		for (const Tally& t : g_cache.tallies)
 		{
+			if (!filterUnique.empty() && t.uniqueName != filterUnique)
+				continue;
+
+			outInfo.sourceCount += t.sources;
+
 			RailRateEntry entry;
 			entry.displayName = t.displayName;
 
@@ -302,11 +372,10 @@ namespace Waila
 			if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 				entry.itemData = static_cast<UAuItemDataBase*>(obj);
 
-			if (t.known)
-			{
+			if (t.maxKnown)
 				entry.perMinMax = t.maxPerMin;
+			if (t.maxKnown && t.nowKnown)
 				entry.perMinNow = t.nowPerMin;
-			}
 			outInfo.rates.push_back(std::move(entry));
 		}
 
