@@ -49,6 +49,12 @@ namespace Waila::UI
 		constexpr float  kStockTileMin = 32.0f;
 		constexpr float  kStockTileMax = kStatRingD;
 
+		// Rate body: one line per item, an icon, its name, then two figure columns.
+		constexpr float kRateRowH   = 26.0f;
+		constexpr float kRateIcon   = 22.0f;
+		constexpr float kRateGap    = 10.0f;
+		constexpr float kRateColGap = 16.0f;
+
 		constexpr float kDescLineH  = 17.0f;
 		constexpr int   kDescMaxLines = 3;
 
@@ -235,6 +241,41 @@ namespace Waila::UI
 			return w;
 		}
 
+		// The two figure columns are as wide as the longest figure in each.
+		struct RateMetrics
+		{
+			float nameW = 0.0f;
+			float nowW  = 0.0f;
+			float maxW  = 0.0f;
+		};
+
+		RateMetrics MeasureRates(const CardModel& m)
+		{
+			RateMetrics r{};
+			for (const auto& row : m.rates)
+			{
+				r.nameW = (std::max)(r.nameW, EstimateW(row.name, kFontLabel));
+				r.nowW  = (std::max)(r.nowW,  EstimateW(row.now,  kFontLabel));
+				r.maxW  = (std::max)(r.maxW,  EstimateW(row.max,  kFontLabel));
+			}
+			if (m.rates.empty())
+				r.nameW = EstimateW(m.ratesNote, kFontLabel);
+			return r;
+		}
+
+		float RateBodyHeight(const CardModel& m)
+		{
+			return static_cast<float>((std::max)(m.rates.size(), size_t(1))) * kRateRowH + 6.0f;
+		}
+
+		float RateBodyWidth(const CardModel& m)
+		{
+			const RateMetrics r = MeasureRates(m);
+			if (m.rates.empty())
+				return r.nameW;
+			return kRateIcon + kRateGap + r.nameW + kRateColGap + r.nowW + kRateColGap + r.maxW;
+		}
+
 		// A card narrower than its own title is worse than a card with air in it.
 		float HeaderWidth(const CardModel& m)
 		{
@@ -304,13 +345,15 @@ namespace Waila::UI
 	{
 		const FlowMetrics f = MeasureFlow(model);
 
-		const float bodyW = model.hasFlow ? FlowGroupWidth(model, f) : StatBodyWidth(model);
+		const float bodyW = model.hasFlow  ? FlowGroupWidth(model, f)
+		                 : model.hasRates ? RateBodyWidth(model)
+		                 : StatBodyWidth(model);
 		const float baseW = Clamp((std::max)(bodyW, HeaderWidth(model)) + kPadX * 2.0f,
 		                          kCardMinW, kCardMaxW);
 
 		float h = kStrip + kHeaderH;
 
-		h += model.hasFlow ? f.bodyH : StatBodyHeight(model);
+		h += model.hasFlow ? f.bodyH : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
 
 		if (HasFooter(model))
 			h += kFooterH;
@@ -584,6 +627,48 @@ namespace Waila::UI
 		}
 	}
 
+	namespace
+	{
+		void DrawRateBody(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& m,
+		                  const Palette& pal, float s, const Rect& r, float bodyTop)
+		{
+			const float left  = r.x0 + kPadX * s;
+			const float right = r.x1 - kPadX * s;
+
+			if (m.rates.empty())
+			{
+				Draw::TextAt(ui, dl, left, bodyTop + (kRateRowH - kFontLabel) * 0.5f * s,
+					m.ratesNote.c_str(), pal.textMuted, kFontLabel * s);
+				return;
+			}
+
+			// Figures right-align to the card edge, "max" outermost.
+			const RateMetrics rm = MeasureRates(m);
+			const float maxRight = right;
+			const float nowRight = right - (rm.maxW + kRateColGap) * s;
+			const float nameMaxW = nowRight - (rm.nowW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
+
+			for (size_t i = 0; i < m.rates.size(); ++i)
+			{
+				const RateRow& row = m.rates[i];
+				const float y    = bodyTop + kRateRowH * s * static_cast<float>(i);
+				const float midY = y + kRateRowH * 0.5f * s;
+				const float textY = midY - kFontLabel * 0.5f * s;
+
+				Draw::IconBare(ui, dl, { left, midY - kRateIcon * 0.5f * s,
+				                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
+					row.icon, pal, 1.0f);
+
+				Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s, textY, nameMaxW,
+					row.name.c_str(), pal.textPrimary, kFontLabel * s);
+
+				const Color nowColor = row.tone == Health::Idle ? pal.textPrimary : Theme::Of(pal, row.tone);
+				Draw::TextRight(ui, dl, nowRight, textY, row.now.c_str(), nowColor, kFontLabel * s);
+				Draw::TextRight(ui, dl, maxRight, textY, row.max.c_str(), pal.textMuted, kFontLabel * s);
+			}
+		}
+	}
+
 	void Card::Draw(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& model,
 	                const Palette& pal, float scale, const Rect& rect)
 	{
@@ -601,6 +686,11 @@ namespace Waila::UI
 		{
 			DrawFlowBody(ui, dl, model, pal, s, rect, bodyTop);
 			bodyTop += MeasureFlow(model).bodyH * s;
+		}
+		else if (model.hasRates)
+		{
+			DrawRateBody(ui, dl, model, pal, s, rect, bodyTop);
+			bodyTop += RateBodyHeight(model) * s;
 		}
 		else
 		{

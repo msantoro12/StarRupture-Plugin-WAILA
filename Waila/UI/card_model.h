@@ -16,6 +16,7 @@ namespace Waila
 	struct CoolerPassiveInfo;
 	struct CargoSenderInfo;
 	struct CargoReceiverInfo;
+	struct RailInfo;
 }
 
 namespace Waila::UI
@@ -36,6 +37,17 @@ namespace Waila::UI
 		std::string value;
 		std::string label;
 		Health      tone = Health::Idle;
+	};
+
+	// One item a drone rail's sources make, with its rate per minute now and at
+	// full capacity. Either figure reads "?" when it could not be worked out.
+	struct RateRow
+	{
+		PluginTextureHandle icon = nullptr;
+		std::string         name;
+		std::string         now;
+		std::string         max;
+		Health              tone = Health::Idle;
 	};
 
 	// Everything the card needs for one frame, with every engine pointer already
@@ -74,6 +86,12 @@ namespace Waila::UI
 		int32_t               stockMore = 0;   // kinds held that didn't fit the grid
 		std::vector<StatCell> stats;
 
+		// Rate body: what a drone rail's sources make. `ratesNote` stands in when
+		// there is nothing to list.
+		bool                  hasRates = false;
+		std::vector<RateRow>  rates;
+		std::string           ratesNote;
+
 		std::string footLeft;
 		std::string footRight;
 		std::string description;   // only populated when enabled in config
@@ -95,5 +113,6 @@ namespace Waila::UI
 		void FromCoolerPassive(const Waila::CoolerPassiveInfo& info, CardModel& out);
 		void FromCargoSender  (const Waila::CargoSenderInfo&   info, CardModel& out);
 		void FromCargoReceiver(const Waila::CargoReceiverInfo& info, CardModel& out);
+		void FromRail         (const Waila::RailInfo&          info, CardModel& out);
 	}
 }

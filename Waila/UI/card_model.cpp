@@ -9,6 +9,7 @@
 #include "cooler_passive_detector.h"
 #include "cargo_sender_detector.h"
 #include "cargo_receiver_detector.h"
+#include "rail_detector.h"
 
 #include <cmath>
 #include <cstdio>
@@ -279,6 +280,72 @@ namespace Waila::UI
 		{
 			out.status     = Health::Idle;
 			out.statusText = "Empty";
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Drone rail
+	// -------------------------------------------------------------------------
+
+	namespace
+	{
+		// Past this the list stops being a glance.
+		constexpr size_t kMaxRateRows = 6;
+
+		std::string PerMin(float v)
+		{
+			if (v < 0.0f)
+				return "?";
+
+			char buf[24];
+			Draw::FormatNumber(buf, sizeof(buf), v);
+			return buf;
+		}
+	}
+
+	void Card::FromRail(const Waila::RailInfo& info, CardModel& out)
+	{
+		BeginCard(out, Accent::Cargo, info.buildingName, info.buildingDesc, info.buildingData);
+
+		out.hasRates = true;
+		out.chip     = info.filterName;
+
+		for (size_t i = 0; i < info.rates.size() && i < kMaxRateRows; ++i)
+		{
+			const Waila::RailRateEntry& r = info.rates[i];
+
+			RateRow row;
+			row.icon = Icons::ForItem(r.itemData);
+			row.name = r.displayName;
+			row.now  = PerMin(r.perMinNow);
+			row.max  = PerMin(r.perMinMax);
+
+			if (r.perMinNow >= 0.0f && r.perMinMax > 0.0f)
+			{
+				if (r.perMinNow <= 0.0f)
+					row.tone = Health::Bad;
+				else if (r.perMinNow < r.perMinMax * 0.999f)
+					row.tone = Health::Warn;
+			}
+			out.rates.push_back(std::move(row));
+		}
+
+		if (out.rates.empty())
+			out.ratesNote = "No sources found";
+
+		char buf[32];
+		if (info.sourceCount > 0)
+		{
+			snprintf(buf, sizeof(buf), "%d source%s%s", info.sourceCount,
+				info.sourceCount == 1 ? "" : "s", info.truncated ? "+" : "");
+			out.statusText = buf;
+		}
+
+		out.footLeft = "items / min: now, max";
+		if (info.rates.size() > kMaxRateRows)
+		{
+			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(info.rates.size() - kMaxRateRows));
+			out.footRight = buf;
 		}
 	}
 

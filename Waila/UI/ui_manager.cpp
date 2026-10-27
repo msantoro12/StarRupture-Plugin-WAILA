@@ -135,6 +135,7 @@ namespace Waila::UI
 					m_pendingCard.Clear();
 				}
 				Waila::UI::Icons::Shutdown();
+				Waila::RailDetector::Reset();
 
 				m_self->hooks->UI->UnregisterOnConfigChanged(m_self, &OnConfigChanged);
 			}
@@ -286,6 +287,7 @@ namespace Waila::UI
 		Waila::CoolerPassiveInfo coolerPassiveInfo;
 		Waila::CargoSenderInfo   cargoSenderInfo;
 		Waila::CargoReceiverInfo cargoReceiverInfo;
+		Waila::RailInfo          railInfo;
 
 		// Perform raycast and extract info immediately (while actor pointer is valid)
 		// PerformRaycast always fills hit.rayStart/rayEnd even on a miss, so we can visualise both cases.
@@ -320,6 +322,10 @@ namespace Waila::UI
 			{
 				Waila::CargoReceiverDetector::GetReceiverInfo(hit.actor, cargoReceiverInfo);
 			}
+			else if (Waila::RailDetector::IsRail(hit.actor))
+			{
+				Waila::RailDetector::GetRailInfo(hit.actor, railInfo);
+			}
 		}
 
 		// Retry any icons the GPU wasn't ready for on an earlier frame.
@@ -337,6 +343,7 @@ namespace Waila::UI
 		else if (coolerPassiveInfo.IsValid()) Waila::UI::Card::FromCoolerPassive(coolerPassiveInfo, card);
 		else if (cargoSenderInfo.IsValid())   Waila::UI::Card::FromCargoSender(cargoSenderInfo, card);
 		else if (cargoReceiverInfo.IsValid()) Waila::UI::Card::FromCargoReceiver(cargoReceiverInfo, card);
+		else if (railInfo.IsValid())          Waila::UI::Card::FromRail(railInfo, card);
 
 		// Size the window to exactly what the card will paint, at the current scale.
 		const bool hasCard = card.valid;
