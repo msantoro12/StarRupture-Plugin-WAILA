@@ -45,5 +45,12 @@ namespace Waila
 
 		// Drops the cache. Called when the plugin disables.
 		static void Reset();
+
+#if WAILA_RAIL_SNAPSHOT
+		// Diagnostic build only. Arm on world load; the tick writes one snapshot
+		// once the delay has passed.
+		static void ArmSnapshot();
+		static void SnapshotTick();
+#endif
 	};
 }
