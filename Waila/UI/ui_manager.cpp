@@ -89,6 +89,10 @@ namespace Waila::UI
 
 		m_self = self;
 
+#if WAILA_RAIL_SNAPSHOT
+		Waila::RailDetector::ArmSnapshot();
+#endif
+
 		// Register engine tick for raycasting
 		if (m_self->hooks)
 		{
@@ -278,6 +282,9 @@ namespace Waila::UI
 			return;
 		}
 
+#if WAILA_RAIL_SNAPSHOT
+		Waila::RailDetector::SnapshotTick();
+#endif
 
 		Waila::Core::RaycastHit hit;
 		Waila::CrafterInfo  info;

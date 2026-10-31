@@ -60,4 +60,14 @@
     </ClCompile>
   </ItemDefinitionGroup>
 
+  <!-- ============================================================
+       WAILA_RAIL_SNAPSHOT
+       Diagnostic build only: /p:WailaRailSnapshot=1. Never set for a release.
+       ============================================================ -->
+  <ItemDefinitionGroup Condition="'$(WailaRailSnapshot)' == '1'">
+    <ClCompile>
+      <PreprocessorDefinitions>WAILA_RAIL_SNAPSHOT=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
 </Project>
