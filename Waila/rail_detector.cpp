@@ -228,8 +228,11 @@ namespace Waila
 		// Flood fill over the rail segments, from the looked-at one outwards. Rails
 		// meet where their spline ends do, so two rails are neighbours when an end of
 		// one lies within kJoinTolerance of an end of the other.
-		// A crafter at an end is a source and the fill does not continue through that
-		// end, or a factory's input and output rails would merge into one network.
+		// An end that no other rail meets and that lies inside a crafter's bounds
+		// makes that crafter a source. Nothing continues from such an end, so a
+		// factory's input and output rails do not merge into one network. Rails only
+		// join end to end: the sockets of a junction, roundabout or vertical connector
+		// sit metres apart, so the fill does not cross those buildings.
 		// Fills outDirect with the crafters and outRails with the rails visited.
 		void CollectNetwork(UWorld* world, ACrDronePathPointConnection* start,
 		                    const std::vector<CrafterBox>& crafters,
@@ -269,20 +272,12 @@ namespace Waila
 
 			for (size_t head = 0; head < queue.size(); ++head)
 			{
-				for (const FVector& at : ends[queue[head]])
-				{
-					bool atCrafter = false;
-					for (const CrafterBox& box : crafters)
-					{
-						if (InsideBox(at, box))
-						{
-							outDirect.insert(box.crafter);
-							atCrafter = true;
-						}
-					}
-					if (atCrafter)
-						continue;
+				const size_t current = queue[head];
 
+				for (const FVector& at : ends[current])
+				{
+					// The other rails whose ends meet this one.
+					std::vector<size_t> meets;
 					const Cell c = CellOf(at);
 					for (int64_t dx = -1; dx <= 1; ++dx)
 					for (int64_t dy = -1; dy <= 1; ++dy)
@@ -294,22 +289,52 @@ namespace Waila
 
 						for (const RailEnd& other : it->second)
 						{
-							if (seen[other.rail])
+							if (other.rail == current)
 								continue;
 
 							const double ex = at.X - other.at.X, ey = at.Y - other.at.Y, ez = at.Z - other.at.Z;
-							if (ex * ex + ey * ey + ez * ez > toleranceSq)
+							if (ex * ex + ey * ey + ez * ez <= toleranceSq)
+								meets.push_back(other.rail);
+						}
+					}
+
+					// An end nothing else meets is where the rail reaches a building.
+					// It serves the one crafter whose bounds hold it, and the fill stops.
+					if (meets.empty())
+					{
+						const CrafterBox* nearest = nullptr;
+						double            nearestSq = 0.0;
+						for (const CrafterBox& box : crafters)
+						{
+							if (!InsideBox(at, box))
 								continue;
 
-							if (queue.size() >= kMaxRails)
+							const double bx = at.X - box.origin.X, by = at.Y - box.origin.Y, bz = at.Z - box.origin.Z;
+							const double sq = bx * bx + by * by + bz * bz;
+							if (!nearest || sq < nearestSq)
 							{
-								outTruncated = true;
-								return;
+								nearest   = &box;
+								nearestSq = sq;
 							}
-							seen[other.rail] = true;
-							queue.push_back(other.rail);
-							outRails.insert(rails[other.rail]);
 						}
+						if (nearest)
+							outDirect.insert(nearest->crafter);
+						continue;
+					}
+
+					for (size_t next : meets)
+					{
+						if (seen[next])
+							continue;
+
+						if (queue.size() >= kMaxRails)
+						{
+							outTruncated = true;
+							return;
+						}
+						seen[next] = true;
+						queue.push_back(next);
+						outRails.insert(rails[next]);
 					}
 				}
 			}
