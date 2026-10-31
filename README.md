@@ -13,6 +13,7 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
+  - **Drone Rails** — the crafters on a rail network, summed per item as items per minute (now and at full speed); rails join where their ends meet
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 
@@ -89,6 +90,7 @@ Engine tick → WailaUIManager::Tick()
 | [`cooler_passive_detector.h`](Waila/cooler_passive_detector.h) | Detects passive cooler machines |
 | [`cargo_sender_detector.h`](Waila/cargo_sender_detector.h) | Detects cargo sender machines |
 | [`cargo_receiver_detector.h`](Waila/cargo_receiver_detector.h) | Detects cargo receiver machines |
+| [`rail_detector.h`](Waila/rail_detector.h) | Detects drone rails and sums the crafters on their network |
 | [`waila_functions.h`](Waila/waila_functions.h) | Pattern-scanned function pointers for internal game APIs |
 | [`plugin_config.h`](Waila/plugin_config.h) | Schema-based `Waila.ini` config with typed accessors |
 
