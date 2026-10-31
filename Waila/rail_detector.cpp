@@ -1,4 +1,5 @@
 #include "rail_detector.h"
+#include "rail_network.h"
 #include "plugin_helpers.h"
 #include "waila_functions.h"
 #include "Chimera_classes.hpp"
@@ -8,7 +9,6 @@
 #include "AuItems_classes.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -27,20 +27,9 @@ namespace Waila
 		constexpr size_t kMaxRails   = 1024;
 		constexpr size_t kMaxSources = 256;
 
-		// INFERRED, as is everything about which buildings a rail serves: the SDK
-		// has no explicit building-to-rail link. ConnectedStartActor and
-		// ConnectedEndActor were null on every rail probed in a loaded save, so the
-		// topology comes from the rail splines instead. Two rails are neighbours when
-		// an end of one lies within kJoinTolerance of an end of the other. A crafter is
-		// a source when a rail end lies inside its bounds grown by kCrafterMargin, and
-		// the fill does not continue through that end. A building that only consumes
-		// from the rail cannot be told apart from one that feeds it.
-		//
 		// Only actors the game has spawned are visible to GetAllActorsOfClass, and
 		// player buildings are streamed in around the camera (INFERRED), so a long
 		// rail can be cut short without `truncated` being set.
-		constexpr double kJoinTolerance = 100.0;   // unreal units, 100 = 1 m
-		constexpr double kCrafterMargin = 200.0;   // unreal units, 200 = 2 m
 
 		constexpr std::chrono::milliseconds kRefresh{ 1000 };
 
@@ -144,37 +133,33 @@ namespace Waila
 			return true;
 		}
 
-		// A crafter and its bounds, fetched once per scan. The pointer is only used
-		// inside that scan.
-		struct CrafterBox
-		{
-			ACrCrafter* crafter;
-			FVector     origin;
-			FVector     extent;
-		};
+		RailNetwork::Vec3 ToVec(const FVector& v) { return { v.X, v.Y, v.Z }; }
 
-		std::vector<CrafterBox> GatherCrafters(UWorld* world)
+		// The crafters, fetched once per scan. The pointers are only used inside
+		// that scan; the scene holds their bounds at the same indices.
+		std::vector<ACrCrafter*> GatherCrafters(UWorld* world, RailNetwork::Scene& scene)
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
 
-			std::vector<CrafterBox> boxes;
+			std::vector<ACrCrafter*> crafters;
 			for (int32_t i = 0; i < all.Num(); ++i)
 			{
 				auto* crafter = static_cast<ACrCrafter*>(all[i]);
 				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
 					continue;
 
-				CrafterBox box{ crafter, {}, {} };
-				crafter->GetActorBounds(false, &box.origin, &box.extent, false);
-				boxes.push_back(box);
+				FVector origin{}, extent{};
+				crafter->GetActorBounds(false, &origin, &extent, false);
+				scene.crafters.push_back({ ToVec(origin), ToVec(extent) });
+				crafters.push_back(crafter);
 			}
-			return boxes;
+			return crafters;
 		}
 
 		// World positions of a rail's first and last spline point. False when the
 		// spline is missing.
-		bool RailEnds(ACrDronePathPointConnection* rail, std::array<FVector, 2>& out)
+		bool RailEnds(ACrDronePathPointConnection* rail, RailNetwork::Rail& out)
 		{
 			USplineComponent* spline = rail->Spline;
 			if (!spline || !UKismetSystemLibrary::IsValid(spline))
@@ -184,174 +169,42 @@ namespace Waila
 			if (points < 2)
 				return false;
 
-			out[0] = spline->GetLocationAtSplinePoint(0, ESplineCoordinateSpace::World);
-			out[1] = spline->GetLocationAtSplinePoint(points - 1, ESplineCoordinateSpace::World);
+			out.start = ToVec(spline->GetLocationAtSplinePoint(0, ESplineCoordinateSpace::World));
+			out.end   = ToVec(spline->GetLocationAtSplinePoint(points - 1, ESplineCoordinateSpace::World));
 			return true;
 		}
 
-		bool InsideBox(const FVector& p, const CrafterBox& box)
-		{
-			return std::abs(p.X - box.origin.X) <= box.extent.X + kCrafterMargin
-			    && std::abs(p.Y - box.origin.Y) <= box.extent.Y + kCrafterMargin
-			    && std::abs(p.Z - box.origin.Z) <= box.extent.Z + kCrafterMargin;
-		}
-
-		// Rail ends are bucketed in a grid of kJoinTolerance cells, so finding the ends
-		// near a point only checks the 27 cells around it.
-		struct Cell
-		{
-			int64_t x, y, z;
-			bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; }
-		};
-
-		struct CellHash
-		{
-			size_t operator()(const Cell& c) const
-			{
-				return static_cast<size_t>(c.x * 73856093LL ^ c.y * 19349663LL ^ c.z * 83492791LL);
-			}
-		};
-
-		Cell CellOf(const FVector& p)
-		{
-			return { static_cast<int64_t>(std::floor(p.X / kJoinTolerance)),
-			         static_cast<int64_t>(std::floor(p.Y / kJoinTolerance)),
-			         static_cast<int64_t>(std::floor(p.Z / kJoinTolerance)) };
-		}
-
-		struct RailEnd
-		{
-			size_t  rail;   // index into the scan's rail list
-			FVector at;
-		};
-
-		// Flood fill over the rail segments, from the looked-at one outwards. Rails
-		// meet where their spline ends do, so two rails are neighbours when an end of
-		// one lies within kJoinTolerance of an end of the other.
-		// An end that no other rail meets and that lies inside a crafter's bounds
-		// makes that crafter a source. Nothing continues from such an end, so a
-		// factory's input and output rails do not merge into one network. Rails only
-		// join end to end: the sockets of a junction, roundabout or vertical connector
-		// sit metres apart, so the fill does not cross those buildings.
-		// Fills outDirect with the crafters and outRails with the rails visited.
-		void CollectNetwork(UWorld* world, ACrDronePathPointConnection* start,
-		                    const std::vector<CrafterBox>& crafters,
-		                    std::unordered_set<const AActor*>& outDirect,
-		                    std::unordered_set<const AActor*>& outRails, bool& outTruncated)
+		// Every rail with a spline. The pointers are only compared, at the same
+		// indices as the scene's rails.
+		std::vector<const AActor*> GatherRails(UWorld* world, RailNetwork::Scene& scene)
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrDronePathPointConnection::StaticClass(), &all);
 
-			std::vector<ACrDronePathPointConnection*>                rails;
-			std::vector<std::array<FVector, 2>>                      ends;
-			std::unordered_map<Cell, std::vector<RailEnd>, CellHash> grid;
+			std::vector<const AActor*> rails;
 			for (int32_t i = 0; i < all.Num(); ++i)
 			{
 				auto* rail = static_cast<ACrDronePathPointConnection*>(all[i]);
-				std::array<FVector, 2> e;
-				if (!rail || !UKismetSystemLibrary::IsValid(rail) || !RailEnds(rail, e))
+				RailNetwork::Rail ends;
+				if (!rail || !UKismetSystemLibrary::IsValid(rail) || !RailEnds(rail, ends))
 					continue;
 
-				grid[CellOf(e[0])].push_back({ rails.size(), e[0] });
-				grid[CellOf(e[1])].push_back({ rails.size(), e[1] });
+				scene.rails.push_back(ends);
 				rails.push_back(rail);
-				ends.push_back(e);
 			}
-
-			outRails.insert(start);
-
-			const auto startIt = std::find(rails.begin(), rails.end(), start);
-			if (startIt == rails.end())
-				return;
-
-			std::vector<bool>   seen(rails.size(), false);
-			std::vector<size_t> queue{ static_cast<size_t>(startIt - rails.begin()) };
-			seen[queue[0]] = true;
-
-			const double toleranceSq = kJoinTolerance * kJoinTolerance;
-
-			for (size_t head = 0; head < queue.size(); ++head)
-			{
-				const size_t current = queue[head];
-
-				for (const FVector& at : ends[current])
-				{
-					// The other rails whose ends meet this one.
-					std::vector<size_t> meets;
-					const Cell c = CellOf(at);
-					for (int64_t dx = -1; dx <= 1; ++dx)
-					for (int64_t dy = -1; dy <= 1; ++dy)
-					for (int64_t dz = -1; dz <= 1; ++dz)
-					{
-						const auto it = grid.find({ c.x + dx, c.y + dy, c.z + dz });
-						if (it == grid.end())
-							continue;
-
-						for (const RailEnd& other : it->second)
-						{
-							if (other.rail == current)
-								continue;
-
-							const double ex = at.X - other.at.X, ey = at.Y - other.at.Y, ez = at.Z - other.at.Z;
-							if (ex * ex + ey * ey + ez * ez <= toleranceSq)
-								meets.push_back(other.rail);
-						}
-					}
-
-					// An end nothing else meets is where the rail reaches a building.
-					// It serves the one crafter whose bounds hold it, and the fill stops.
-					if (meets.empty())
-					{
-						const CrafterBox* nearest = nullptr;
-						double            nearestSq = 0.0;
-						for (const CrafterBox& box : crafters)
-						{
-							if (!InsideBox(at, box))
-								continue;
-
-							const double bx = at.X - box.origin.X, by = at.Y - box.origin.Y, bz = at.Z - box.origin.Z;
-							const double sq = bx * bx + by * by + bz * bz;
-							if (!nearest || sq < nearestSq)
-							{
-								nearest   = &box;
-								nearestSq = sq;
-							}
-						}
-						if (nearest)
-							outDirect.insert(nearest->crafter);
-						continue;
-					}
-
-					for (size_t next : meets)
-					{
-						if (seen[next])
-							continue;
-
-						if (queue.size() >= kMaxRails)
-						{
-							outTruncated = true;
-							return;
-						}
-						seen[next] = true;
-						queue.push_back(next);
-						outRails.insert(rails[next]);
-					}
-				}
-			}
+			return rails;
 		}
 
 		// Crafters on the network, summed per output item. Stations, storage and
 		// receivers hold stock but have no production rate, so they are not sources.
-		void CollectSources(const std::vector<CrafterBox>& crafters,
-		                    const std::unordered_set<const AActor*>& direct, Cache& out)
+		void CollectSources(const std::vector<ACrCrafter*>& crafters,
+		                    const std::vector<size_t>& sources, Cache& out)
 		{
 			std::unordered_map<std::string, size_t> index;
 
-			for (const CrafterBox& box : crafters)
+			for (size_t source : sources)
 			{
-				ACrCrafter* crafter = box.crafter;
-				if (direct.count(crafter) == 0)
-					continue;
+				ACrCrafter* crafter = crafters[source];
 
 				UAuItemDataBase* item = nullptr;
 				float full = 0.0f;
@@ -455,10 +308,21 @@ namespace Waila
 			g_cache = Cache{};
 			g_cache.stamp = now;
 
-			const std::vector<CrafterBox> crafters = GatherCrafters(world);
-			std::unordered_set<const AActor*> direct;
-			CollectNetwork(world, rail, crafters, direct, g_cache.members, g_cache.truncated);
-			CollectSources(crafters, direct, g_cache);
+			RailNetwork::Scene scene;
+			const std::vector<const AActor*> rails    = GatherRails(world, scene);
+			const std::vector<ACrCrafter*>   crafters = GatherCrafters(world, scene);
+
+			g_cache.members.insert(actor);
+			const auto self = std::find(rails.begin(), rails.end(), actor);
+			if (self != rails.end())
+			{
+				const RailNetwork::Network network = RailNetwork::CollectNetwork(
+					scene, static_cast<size_t>(self - rails.begin()), kMaxRails);
+				for (size_t i : network.rails)
+					g_cache.members.insert(rails[i]);
+				g_cache.truncated = network.truncated;
+				CollectSources(crafters, network.crafters, g_cache);
+			}
 
 			// Biggest flows first, so a cut-off list drops the smallest.
 			std::stable_sort(g_cache.tallies.begin(), g_cache.tallies.end(),

@@ -60,6 +60,9 @@
     <ClInclude Include="rail_detector.h">
       <Filter>Handlers</Filter>
     </ClInclude>
+    <ClInclude Include="rail_network.h">
+      <Filter>Handlers</Filter>
+    </ClInclude>
     <ClInclude Include="cargo_sender_detector.h">
       <Filter>Handlers</Filter>
     </ClInclude>
