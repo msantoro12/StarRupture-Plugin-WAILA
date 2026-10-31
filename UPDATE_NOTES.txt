@@ -1,5 +1,7 @@
 Drone rails show the crafters that feed them, summed per item as items per minute (now and at full speed)
-Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track, and through storage to the crafters filling it
+Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track once the lane has loaded, and through storage to the crafters filling it
 Each rail on a platform shows its own sources; a factory's input rails no longer show the factory they feed
+The tracks of a lane that has not loaded yet can still mix, and buildings that have not loaded do not count
+A rail passing through a drill's frame no longer shows the drill
 Idle crafters count with the recipe they are set to
 The card follows the camera, so it works from the building drone; Max Distance counts from the drone

@@ -41,9 +41,10 @@ namespace
 		return scene.rails.size() - 1;
 	}
 
+	// A 2 m cube standing on the floor of its bounds.
 	size_t AddBuilding(Scene& scene, Vec3 origin, bool crafter)
 	{
-		scene.buildings.push_back({ origin, { 100, 100, 100 }, crafter });
+		scene.buildings.push_back({ origin, { 100, 100, 100 }, origin.z - 100, crafter });
 		return scene.buildings.size() - 1;
 	}
 
@@ -111,6 +112,63 @@ namespace
 		Check(SourcesOf(scene, far).empty(), "loose ends 130 apart do not");
 	}
 
+	// A junction the game has not spawned sits inside a drill's 20 m tall
+	// bounds, fed by a smelter. The drill, the smelter and the rail ends are as
+	// captured; the smelter's rail into the junction is one rail here.
+	void TestJunctionInsideDrill()
+	{
+		Scene scene;
+		scene.buildings.push_back({ { -226142.594, -54458.769, 3350.953 }, { 733.513, 445.099, 980.614 }, 3035.253, true });
+		scene.buildings.push_back({ { -227473.150, -54400.280, 3659.540 }, { 304.462, 198.482, 269.806 }, 3390.0, true });
+		const size_t drill = 0, smelter = 1;
+
+		const size_t drillOut = AddRail(scene, { -226843.355, -54458.769, 3345.253 }, { -226814.850, -53800.000, 3553.930 });
+		AddRail(scene, { -227760, -54400, 3650 }, { -226400, -54854, 4116 });
+		const size_t outA = AddRail(scene, { -226346, -54800, 4116 }, { -224854, -54800, 4116 });
+		const size_t outB = AddRail(scene, { -226454, -54800, 4116 }, { -226500, -55003.953, 4210.188 });
+
+		Check(SourcesOf(scene, drillOut) == std::set<size_t>{ drill }, "the drill's output shows the drill");
+		Check(SourcesOf(scene, outA) == std::set<size_t>{ smelter }, "a junction inside the drill's bounds passes the smelter on");
+		Check(SourcesOf(scene, outB) == std::set<size_t>{ smelter }, "both of its outputs show the smelter");
+	}
+
+	// Three parallel tracks cross a lane building and only the middle one is
+	// fed. The sockets and rail ends are those of a Lane_3 in a captured save.
+	// Once the lane has loaded each track keeps to itself. Before that its rail
+	// ends are loose and join across tracks, so every track shows the crafter.
+	Scene LaneScene(bool loaded, size_t& crafter, std::vector<size_t>& out)
+	{
+		Scene scene;
+		crafter = AddBuilding(scene, { -223654, -53200, 4950 }, true);
+		if (loaded)
+		{
+			scene.AddPathPoint({ { "RailSocket", { -223254, -53200, 6146 } }, { "Rail_0B", { -223146, -53200, 6146 } },
+			                     { "Rail_1A",    { -223254, -53220, 6146 } }, { "Rail_1B", { -223146, -53220, 6146 } },
+			                     { "Rail_2A",    { -223254, -53180, 6146 } }, { "Rail_2B", { -223146, -53180, 6146 } } });
+		}
+		AddRail(scene, { -223854, -53200, 5726 }, { -223254, -53180, 6146 });
+		AddRail(scene, { -223654, -53200, 5050 }, { -223254, -53200, 6146 });
+		AddRail(scene, { -223454, -53200, 5586 }, { -223254, -53220, 6146 });
+		out = { AddRail(scene, { -223146, -53180, 6146 }, { -223146, -53180, 6566 }),
+		        AddRail(scene, { -223146, -53200, 6146 }, { -223146, -53200, 6566 }),
+		        AddRail(scene, { -223146, -53220, 6146 }, { -223146, -53220, 6566 }) };
+		return scene;
+	}
+
+	void TestUnloadedLaneMixes()
+	{
+		size_t              crafter = 0;
+		std::vector<size_t> out;
+
+		const Scene loaded = LaneScene(true, crafter, out);
+		Check(SourcesOf(loaded, out[0]).empty() && SourcesOf(loaded, out[2]).empty()
+		   && SourcesOf(loaded, out[1]) == std::set<size_t>{ crafter }, "a loaded lane keeps its tracks apart");
+
+		const Scene unloaded = LaneScene(false, crafter, out);
+		for (size_t r : out)
+			Check(SourcesOf(unloaded, r) == std::set<size_t>{ crafter }, "an unloaded lane's tracks mix");
+	}
+
 	struct Fixture
 	{
 		Scene                              scene;
@@ -147,7 +205,7 @@ namespace
 				s >> cls;
 				if (kind == "crafter")
 					s >> item;
-				s >> b.origin.x >> b.origin.y >> b.origin.z >> b.extent.x >> b.extent.y >> b.extent.z;
+				s >> b.origin.x >> b.origin.y >> b.origin.z >> b.extent.x >> b.extent.y >> b.extent.z >> b.floorZ;
 				b.crafter = kind == "crafter";
 				out.buildingId[out.scene.buildings.size()] = id;
 				out.item[out.scene.buildings.size()] = item;
@@ -190,14 +248,9 @@ namespace
 			const Sources found = graph.Find(r, 1024, 256);
 			largest = std::max(largest, found.rails);
 
-			// A rail leaving a crafter carries that crafter's output and nothing else.
 			const Port& start = graph.StartOf(r);
 			if (start.kind == Port::Kind::Building && f.scene.buildings[start.index].crafter)
-			{
 				++outputs;
-				Check(found.crafters == std::vector<size_t>{ start.index },
-				      "rail " + std::to_string(r) + " shows only the crafter it leaves");
-			}
 
 			// A rail into a crafter never shows that crafter.
 			const Vec3& end = f.scene.rails[r].end;
@@ -215,7 +268,15 @@ namespace
 			}
 		}
 
-		Check(outputs >= 10, "the platform has crafter output rails");
+		// The rails leaving a crafter, each carrying that crafter's output and
+		// nothing else: six furnaces, two WolframPlate crafters and the drill.
+		const std::pair<long, long> leaving[] = {
+			{ 142428, 140907 }, { 140591, 140611 }, { 113035, 92073 }, { 301508, 301218 }, { 301553, 301533 },
+			{ 302914, 302806 }, { 316068, 349173 }, { 316141, 349650 }, { 303440, 349745 } };
+		for (const auto& [rail, crafter] : leaving)
+			Check(ids(f.rail.at(rail)) == std::set<long>{ crafter }, "rail " + std::to_string(rail) + " shows only the crafter it leaves");
+		Check(outputs == std::size(leaving), "the platform has " + std::to_string(std::size(leaving))
+		      + " crafter output rails (found " + std::to_string(outputs) + ")");
 		Check(inputs >= 10, "the platform has crafter input rails");
 		Check(largest < 64, "no rail walks the whole platform (largest walk " + std::to_string(largest) + ")");
 
@@ -223,9 +284,19 @@ namespace
 		Check(ids(f.rail.at(142511)) == std::set<long>{ 92073, 140611, 140907, 301218, 301533, 302806 },
 		      "the rail into storage shows the six furnaces");
 
+		// Out of storage, carrying what the six furnaces fill it with.
+		Check(ids(f.rail.at(153565)) == std::set<long>{ 92073, 140611, 140907, 301218, 301533, 302806 },
+		      "the rail out of storage shows the six furnaces");
+
 		// Out of a merger the game has not spawned, joined by loose ends.
 		Check(ids(f.rail.at(302060)) == std::set<long>{ 301218, 302806 },
 		      "the unspawned merger's output shows its two furnaces");
+
+		// Out of a junction the game has not spawned, inside the drill's bounds,
+		// and on to the WolframPlate crafters. The smelter feeding it had not
+		// loaded, so these show nothing rather than the drill.
+		for (long rail : { 303344L, 303513L, 304120L, 314858L })
+			Check(ids(f.rail.at(rail)).empty(), "rail " + std::to_string(rail) + " does not show the drill");
 	}
 }
 
@@ -238,6 +309,8 @@ int main()
 	TestLanesStaySeparate();
 	TestJunctionStorageAndInputs();
 	TestLooseEnds();
+	TestJunctionInsideDrill();
+	TestUnloadedLaneMixes();
 	TestPlatform(dir);
 
 	if (g_failures == 0)

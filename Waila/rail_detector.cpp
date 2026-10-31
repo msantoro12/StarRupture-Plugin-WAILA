@@ -137,8 +137,8 @@ namespace Waila
 		RailNetwork::Vec3 ToVec(const FVector& v) { return { v.X, v.Y, v.Z }; }
 
 		// The buildings drones serve, fetched once per scan. The scene holds their
-		// bounds at the same indices; the crafter pointers (null for storage and the
-		// like) are only used inside that scan.
+		// bounds and floor height at the same indices; the crafter pointers (null
+		// for storage and the like) are only used inside that scan.
 		std::vector<ACrCrafter*> GatherBuildings(UWorld* world, RailNetwork::Scene& scene)
 		{
 			TArray<AActor*> all{};
@@ -155,7 +155,7 @@ namespace Waila
 
 				FVector origin{}, extent{};
 				building->GetActorBounds(false, &origin, &extent, false);
-				scene.buildings.push_back({ ToVec(origin), ToVec(extent), crafter != nullptr });
+				scene.buildings.push_back({ ToVec(origin), ToVec(extent), building->K2_GetActorLocation().Z, crafter != nullptr });
 				crafters.push_back(crafter);
 			}
 			return crafters;

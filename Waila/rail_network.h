@@ -49,12 +49,14 @@ namespace Waila::RailNetwork
 	};
 
 	// A building drones bring items to or take them from: a crafter, storage, a
-	// drone station. `origin` and `extent` are its actor bounds.
+	// drone station. `origin` and `extent` are its actor bounds, `floorZ` the
+	// height of its actor location, which is where it stands.
 	struct Building
 	{
-		Vec3 origin;
-		Vec3 extent;
-		bool crafter = false;
+		Vec3   origin;
+		Vec3   extent;
+		double floorZ  = 0.0;
+		bool   crafter = false;
 	};
 
 	constexpr int32_t kAnyLane = -1;
@@ -143,16 +145,22 @@ namespace Waila::RailNetwork
 	//
 	// A rail end on a path point's rail socket belongs to that point: in both
 	// captures every such end lay within 0.5 units of its socket, and each socket
-	// held one rail. An end on the face of a supply building belongs to that
-	// building: those lay within 10 units of its bounds, and the next nearest end
-	// 100 units out.
+	// held one rail. Supply buildings expose no rail sockets (their SocketsData
+	// held none), so an end belongs to a building when it lies within
+	// kBuildingMargin of its bounds at port height. In four captures every such
+	// end sat 260 to 332 units above the building's floor, on furnaces,
+	// crafters, smelters, a drill, storage and a turret. A drill's bounds are
+	// 20 m tall, and the ends of a junction that had not loaded sat inside them
+	// 1081 above the drill's floor.
 	//
 	// Path points the game has not spawned as actors leave their rail ends loose.
 	// A loose rail start is fed by the loose rail ends within kJoinTolerance: the
 	// sockets of a pole sit 30 units apart, those of a junction 76 to 108, and a
 	// merger's outer input 117 from its output. The next gap measured was 130.
+	// The tracks of a lane building that has not loaded join each other this way.
 	constexpr double kSocketTolerance = 5.0;     // unreal units, 100 = 1 m
 	constexpr double kBuildingMargin  = 50.0;
+	constexpr double kPortHeight      = 600.0;
 	constexpr double kJoinTolerance   = 120.0;
 
 	namespace Detail
@@ -378,14 +386,15 @@ namespace Waila::RailNetwork
 			if (port.kind == Port::Kind::Socket)
 				return port;
 
-			// The building whose grown bounds hold the end, the nearest centre
-			// winning when bounds overlap.
+			// The building whose grown bounds hold the end at port height, the
+			// nearest centre winning when bounds overlap.
 			for (size_t b = 0; b < m_scene.buildings.size(); ++b)
 			{
 				const Building& box = m_scene.buildings[b];
 				if (std::abs(at.x - box.origin.x) > box.extent.x + kBuildingMargin
 				 || std::abs(at.y - box.origin.y) > box.extent.y + kBuildingMargin
-				 || std::abs(at.z - box.origin.z) > box.extent.z + kBuildingMargin)
+				 || std::abs(at.z - box.origin.z) > box.extent.z + kBuildingMargin
+				 || at.z - box.floorZ > kPortHeight)
 					continue;
 
 				const double sq = Detail::DistSq(at, box.origin);
