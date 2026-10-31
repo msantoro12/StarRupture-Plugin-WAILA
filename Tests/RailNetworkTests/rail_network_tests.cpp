@@ -133,9 +133,9 @@ namespace
 	}
 
 	// Three parallel tracks cross a lane building and only the middle one is
-	// fed. The sockets and rail ends are those of a Lane_3 in a captured save.
-	// Once the lane has loaded each track keeps to itself. Before that its rail
-	// ends are loose and join across tracks, so every track shows the crafter.
+	// fed. The socket and rail end positions at the lane are from a captured
+	// Lane_3; the crafter and the far ends of its rails are made up. Each track
+	// keeps to itself, whether the lane has loaded or its rail ends are loose.
 	Scene LaneScene(bool loaded, size_t& crafter, std::vector<size_t>& out)
 	{
 		Scene scene;
@@ -155,18 +155,18 @@ namespace
 		return scene;
 	}
 
-	void TestUnloadedLaneMixes()
+	void TestLaneTracksStayApart()
 	{
-		size_t              crafter = 0;
-		std::vector<size_t> out;
+		for (bool loaded : { true, false })
+		{
+			size_t              crafter = 0;
+			std::vector<size_t> out;
+			const Scene         scene = LaneScene(loaded, crafter, out);
+			const std::string   what  = loaded ? "a loaded lane" : "a lane that has not loaded";
 
-		const Scene loaded = LaneScene(true, crafter, out);
-		Check(SourcesOf(loaded, out[0]).empty() && SourcesOf(loaded, out[2]).empty()
-		   && SourcesOf(loaded, out[1]) == std::set<size_t>{ crafter }, "a loaded lane keeps its tracks apart");
-
-		const Scene unloaded = LaneScene(false, crafter, out);
-		for (size_t r : out)
-			Check(SourcesOf(unloaded, r) == std::set<size_t>{ crafter }, "an unloaded lane's tracks mix");
+			Check(SourcesOf(scene, out[1]) == std::set<size_t>{ crafter }, what + " carries its fed track");
+			Check(SourcesOf(scene, out[0]).empty() && SourcesOf(scene, out[2]).empty(), what + " keeps its other tracks apart");
+		}
 	}
 
 	struct Fixture
@@ -310,7 +310,7 @@ int main()
 	TestJunctionStorageAndInputs();
 	TestLooseEnds();
 	TestJunctionInsideDrill();
-	TestUnloadedLaneMixes();
+	TestLaneTracksStayApart();
 	TestPlatform(dir);
 
 	if (g_failures == 0)

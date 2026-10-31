@@ -140,28 +140,34 @@ namespace Waila::RailNetwork
 
 	// INFERRED, as is everything about which buildings a rail serves: the SDK
 	// has no explicit building-to-rail link. ConnectedStartActor, ConnectedEndActor
-	// and SocketActor were null on every rail of two captured saves, so the
+	// and SocketActor were null on every rail of four captured saves, so the
 	// topology comes from where each rail's spline ends sit.
 	//
-	// A rail end on a path point's rail socket belongs to that point: in both
+	// A rail end on a path point's rail socket belongs to that point: in those
 	// captures every such end lay within 0.5 units of its socket, and each socket
 	// held one rail. Supply buildings expose no rail sockets (their SocketsData
 	// held none), so an end belongs to a building when it lies within
-	// kBuildingMargin of its bounds at port height. In four captures every such
-	// end sat 260 to 332 units above the building's floor, on furnaces,
-	// crafters, smelters, a drill, storage and a turret. A drill's bounds are
-	// 20 m tall, and the ends of a junction that had not loaded sat inside them
-	// 1081 above the drill's floor.
+	// kBuildingMargin of its bounds and no higher than kMaxPortHeight above its
+	// floor. Every such end sat 260 to 332 units above the building's floor, on
+	// furnaces, crafters, smelters, a drill, storage and a turret. A drill's
+	// bounds are 20 m tall, and the ends of a junction that had not loaded sat
+	// inside them 1081 above the drill's floor.
 	//
 	// Path points the game has not spawned as actors leave their rail ends loose.
 	// A loose rail start is fed by the loose rail ends within kJoinTolerance: the
 	// sockets of a pole sit 30 units apart, those of a junction 76 to 108, and a
 	// merger's outer input 117 from its output. The next gap measured was 130.
-	// The tracks of a lane building that has not loaded join each other this way.
+	//
+	// Loose starts side by side, within kLaneWidth of each other, are the
+	// parallel tracks of a lane building that has not loaded. Each takes only
+	// its nearest loose end, the one straight across the lane, so the tracks
+	// stay apart. A lane's tracks sit 20 apart and its outer pair 40; the next
+	// spacing measured between loose starts was 48.
 	constexpr double kSocketTolerance = 5.0;     // unreal units, 100 = 1 m
 	constexpr double kBuildingMargin  = 50.0;
-	constexpr double kPortHeight      = 600.0;
+	constexpr double kMaxPortHeight   = 600.0;
 	constexpr double kJoinTolerance   = 120.0;
+	constexpr double kLaneWidth       = 44.0;
 
 	namespace Detail
 	{
@@ -245,6 +251,7 @@ namespace Waila::RailNetwork
 		explicit Graph(const Scene& scene)
 			: m_scene(scene), m_looseEnds(kJoinTolerance)
 		{
+			Detail::PointGrid looseStarts(kJoinTolerance);
 			Detail::PointGrid sockets(kJoinTolerance);
 			for (size_t i = 0; i < scene.sockets.size(); ++i)
 				sockets.Add(i, scene.sockets[i].at);
@@ -255,6 +262,8 @@ namespace Waila::RailNetwork
 			for (size_t r = 0; r < scene.rails.size(); ++r)
 			{
 				m_start[r] = Place(scene.rails[r].start, sockets);
+				if (m_start[r].kind == Port::Kind::Loose)
+					looseStarts.Add(r, scene.rails[r].start);
 
 				const Port end = Place(scene.rails[r].end, sockets);
 				switch (end.kind)
@@ -272,6 +281,21 @@ namespace Waila::RailNetwork
 					m_looseEnds.Add(r, scene.rails[r].end);
 					break;
 				}
+			}
+
+			// A loose start beside another one (not on top of it) is a lane track.
+			m_laneTrack.resize(scene.rails.size(), false);
+			for (size_t r = 0; r < scene.rails.size(); ++r)
+			{
+				if (m_start[r].kind != Port::Kind::Loose)
+					continue;
+				const Vec3& at = scene.rails[r].start;
+				looseStarts.ForNear(at, [&](size_t other, const Vec3& start)
+				{
+					const double sq = Detail::DistSq(at, start);
+					if (other != r && sq > 1.0 && sq <= kLaneWidth * kLaneWidth)
+						m_laneTrack[r] = true;
+				});
 			}
 		}
 
@@ -353,7 +377,25 @@ namespace Waila::RailNetwork
 				{
 					const Vec3&  at    = m_scene.rails[current].start;
 					const double limit = kJoinTolerance * kJoinTolerance;
-					bool         more  = true;
+					if (m_laneTrack[current])
+					{
+						size_t nearest = m_scene.rails.size();
+						double best    = limit;
+						m_looseEnds.ForNear(at, [&](size_t next, const Vec3& end)
+						{
+							const double sq = Detail::DistSq(at, end);
+							if (sq < best || (sq == best && next < nearest))
+							{
+								best    = sq;
+								nearest = next;
+							}
+						});
+						if (nearest < m_scene.rails.size())
+							visit(nearest);
+						break;
+					}
+
+					bool more = true;
 					m_looseEnds.ForNear(at, [&](size_t next, const Vec3& end)
 					{
 						if (more && Detail::DistSq(at, end) <= limit)
@@ -394,7 +436,7 @@ namespace Waila::RailNetwork
 				if (std::abs(at.x - box.origin.x) > box.extent.x + kBuildingMargin
 				 || std::abs(at.y - box.origin.y) > box.extent.y + kBuildingMargin
 				 || std::abs(at.z - box.origin.z) > box.extent.z + kBuildingMargin
-				 || at.z - box.floorZ > kPortHeight)
+				 || at.z - box.floorZ > kMaxPortHeight)
 					continue;
 
 				const double sq = Detail::DistSq(at, box.origin);
@@ -413,5 +455,6 @@ namespace Waila::RailNetwork
 		std::map<std::pair<size_t, int32_t>, std::vector<size_t>> m_endsAtPoint;
 		std::vector<std::vector<size_t>>                      m_endsAtBuilding;
 		Detail::PointGrid                                     m_looseEnds;
+		std::vector<bool>                                     m_laneTrack;
 	};
 }

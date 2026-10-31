@@ -13,7 +13,7 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
-  - **Drone Rails** — the crafters that feed a rail, summed per item as items per minute (now and at full speed); traced back along the flow through poles, junctions, mergers, a lane's own track (once the lane has loaded) and storage. Only buildings the game has loaded count
+  - **Drone Rails** — the crafters that feed a rail, summed per item as items per minute (now and at full speed); traced back along the flow through poles, junctions, mergers, a lane's own track and storage. Only buildings the game has loaded count
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 
