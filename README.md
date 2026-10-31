@@ -13,7 +13,7 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
-  - **Drone Rails** — the crafters on a rail network, summed per item as items per minute (now and at full speed); rails join where their ends meet
+  - **Drone Rails** — the crafters that feed a rail, summed per item as items per minute (now and at full speed); traced back along the flow through poles, junctions, mergers, a lane's own track and storage
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 
@@ -62,7 +62,7 @@ On first run, `Waila.ini` is generated in `<game_dir>/Plugins/config/` with defa
 | Section | Key | Default | Description |
 |---|---|---|---|
 | `General` | `Enabled` | `true` | Enable or disable the plugin entirely |
-| `WAILA` | `Max Distance` | `650.0` | Maximum raycast range for HUD display in Unreal units (0 – 2500) |
+| `WAILA` | `Max Distance` | `650.0` | Maximum raycast range for HUD display in Unreal units (0 – 2500), counted from the player or the building drone |
 | `WAILA` | `Render Building Descriptions` | `true` | Show/hide the building description line in the HUD panel |
 
 ## Architecture
@@ -82,7 +82,7 @@ Engine tick → WailaUIManager::Tick()
 |---|---|
 | [`plugin.cpp`](Waila/plugin.cpp) | `GetPluginInfo` / `PluginInit` / `PluginShutdown` C exports |
 | [`UI/ui_manager.h`](Waila/UI/ui_manager.h) | Singleton owning tick, ImGui widget, and thread-safe info structs |
-| [`Core/raycaster.h`](Waila/Core/raycaster.h) | Line trace from player eye; returns `RaycastHit` |
+| [`Core/raycaster.h`](Waila/Core/raycaster.h) | Line trace from the player's camera, so it follows the building drone too; returns `RaycastHit` |
 | [`crafter_detector.h`](Waila/crafter_detector.h) | Detects and reads `ACrCrafter` actors |
 | [`storage_detector.h`](Waila/storage_detector.h) | Detects and reads storage buildings |
 | [`power_detector.h`](Waila/power_detector.h) | Detects and reads power buildings |
@@ -90,7 +90,7 @@ Engine tick → WailaUIManager::Tick()
 | [`cooler_passive_detector.h`](Waila/cooler_passive_detector.h) | Detects passive cooler machines |
 | [`cargo_sender_detector.h`](Waila/cargo_sender_detector.h) | Detects cargo sender machines |
 | [`cargo_receiver_detector.h`](Waila/cargo_receiver_detector.h) | Detects cargo receiver machines |
-| [`rail_detector.h`](Waila/rail_detector.h) | Detects drone rails and sums the crafters on their network |
+| [`rail_detector.h`](Waila/rail_detector.h) | Detects drone rails and sums the crafters that feed them |
 | [`waila_functions.h`](Waila/waila_functions.h) | Pattern-scanned function pointers for internal game APIs |
 | [`plugin_config.h`](Waila/plugin_config.h) | Schema-based `Waila.ini` config with typed accessors |
 

@@ -13,7 +13,6 @@
 #include <cmath>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 using namespace SDK;
@@ -22,7 +21,7 @@ namespace Waila
 {
 	namespace
 	{
-		// Bounds for the network scan. Both stop a runaway fill and set
+		// Bounds for the source walk. Both stop a runaway walk and set
 		// RailInfo::truncated when they bite.
 		constexpr size_t kMaxRails   = 1024;
 		constexpr size_t kMaxSources = 256;
@@ -46,17 +45,13 @@ namespace Waila
 			bool           nowKnown  = true;   // false once any source's state could not be read
 		};
 
-		// Everything the card shows, kept between refreshes. Item data is held as a
-		// weak pointer and resolved on use. `rail` is only ever compared, never
-		// dereferenced: a recycled address could at worst show the previous rail's
-		// numbers until the next refresh.
-		//
-		// The tallies cover every item on the whole network, and `members` is the set
-		// of rails the scan reached. Looking at another rail of the same network
-		// reuses the cache, so sweeping the crosshair along a run does not rescan.
+		// Everything the card shows for one rail, kept between refreshes. Item data
+		// is held as a weak pointer and resolved on use. `rail` is only ever
+		// compared, never dereferenced: a recycled address could at worst show the
+		// previous rail's numbers until the next refresh.
 		struct Cache
 		{
-			std::unordered_set<const AActor*>     members;
+			const AActor*                         rail = nullptr;
 			std::chrono::steady_clock::time_point stamp{};
 			int32_t                               sourceCount = 0;
 			bool                                  truncated   = false;
@@ -65,7 +60,8 @@ namespace Waila
 
 		Cache g_cache;
 
-		// Items per minute of one crafter, from the recipe it is working on.
+		// Items per minute of one crafter, from the recipe it is working on, or for
+		// an idle crafter the recipe it is set to.
 		// full = output count / BuildTime x CraftingSpeed x 60.
 		// CraftingSpeed is the live one from the crafting fragment, falling back to
 		// the class default. CraftingMultiplier is left out (INFERRED: it sets how
@@ -80,23 +76,28 @@ namespace Waila
 			if (!comp)
 				return false;
 
-			const TArray<FAuCraftItem>& items = comp->ItemsToCraft;
-			if (items.Num() < 1 || !items[0].RecipeData)
-				return false;
+			const FCrCraftingFragment* frag = nullptr;
+			if (auto fnGetFrag = Waila::Functions::GetCraftingFragment())
+				frag = fnGetFrag(comp);
 
-			UAuItemRecipeData* recipe = items[0].RecipeData;
+			// ItemsToCraft is empty while a crafter waits for input (seen on every
+			// crafter just after a save loads); the fragment still holds the recipe
+			// the player picked (INFERRED).
+			const TArray<FAuCraftItem>& items = comp->ItemsToCraft;
+			const bool queued = items.Num() > 0 && items[0].RecipeData;
+
+			UAuItemRecipeData* recipe = queued ? items[0].RecipeData
+									: frag     ? static_cast<UAuItemRecipeData*>(frag->SelectedRecipe)
+												: nullptr;
+			if (!recipe)
+				return false;
 			outItem = recipe->GetItemDataBase();
 
-			const int32_t count = items[0].OutputItem.Count > 0 ? items[0].OutputItem.Count : recipe->OutputItem.Count;
+			const int32_t count = queued && items[0].OutputItem.Count > 0 ? items[0].OutputItem.Count : recipe->OutputItem.Count;
 			if (!outItem || count <= 0 || recipe->BuildTime <= 0.0f)
 				return false;
 
-			float speed = crafter->CraftingSettings.CraftingSpeed;
-			if (auto fnGetFrag = Waila::Functions::GetCraftingFragment())
-			{
-				if (const FCrCraftingFragment* frag = fnGetFrag(comp))
-					speed = frag->CraftingSpeed;
-			}
+			const float speed = frag ? frag->CraftingSpeed : crafter->CraftingSettings.CraftingSpeed;
 			if (!(speed > 0.0f) || !std::isfinite(speed))
 				return false;
 
@@ -135,26 +136,54 @@ namespace Waila
 
 		RailNetwork::Vec3 ToVec(const FVector& v) { return { v.X, v.Y, v.Z }; }
 
-		// The crafters, fetched once per scan. The pointers are only used inside
-		// that scan; the scene holds their bounds at the same indices.
-		std::vector<ACrCrafter*> GatherCrafters(UWorld* world, RailNetwork::Scene& scene)
+		// The buildings drones serve, fetched once per scan. The scene holds their
+		// bounds at the same indices; the crafter pointers (null for storage and the
+		// like) are only used inside that scan.
+		std::vector<ACrCrafter*> GatherBuildings(UWorld* world, RailNetwork::Scene& scene)
 		{
 			TArray<AActor*> all{};
-			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
+			UGameplayStatics::GetAllActorsOfClass(world, ACrDroneSupplySystemBuildingBase::StaticClass(), &all);
 
 			std::vector<ACrCrafter*> crafters;
 			for (int32_t i = 0; i < all.Num(); ++i)
 			{
-				auto* crafter = static_cast<ACrCrafter*>(all[i]);
-				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
+				AActor* building = all[i];
+				if (!building || !UKismetSystemLibrary::IsValid(building))
 					continue;
 
+				ACrCrafter* crafter = building->IsA(ACrCrafter::StaticClass()) ? static_cast<ACrCrafter*>(building) : nullptr;
+
 				FVector origin{}, extent{};
-				crafter->GetActorBounds(false, &origin, &extent, false);
-				scene.crafters.push_back({ ToVec(origin), ToVec(extent) });
+				building->GetActorBounds(false, &origin, &extent, false);
+				scene.buildings.push_back({ ToVec(origin), ToVec(extent), crafter != nullptr });
 				crafters.push_back(crafter);
 			}
 			return crafters;
+		}
+
+		// The rail sockets of every path point: poles, rail supports, junctions,
+		// mergers and lanes.
+		void GatherPathPoints(UWorld* world, RailNetwork::Scene& scene)
+		{
+			TArray<AActor*> all{};
+			UGameplayStatics::GetAllActorsOfClass(world, ACrDronePathPoint::StaticClass(), &all);
+
+			std::vector<RailNetwork::NamedSocket> named;
+			for (int32_t i = 0; i < all.Num(); ++i)
+			{
+				auto* point = static_cast<ACrDronePathPoint*>(all[i]);
+				if (!point || !UKismetSystemLibrary::IsValid(point))
+					continue;
+
+				named.clear();
+				const TArray<FBuildingSocketData>& sockets = point->SocketsData;
+				for (int32_t s = 0; s < sockets.Num(); ++s)
+				{
+					if (sockets[s].Socket)
+						named.push_back({ sockets[s].Socket->SocketName.ToString(), ToVec(sockets[s].WorldTransform.Translation) });
+				}
+				scene.AddPathPoint(named);
+			}
 		}
 
 		// World positions of a rail's first and last spline point. False when the
@@ -195,8 +224,8 @@ namespace Waila
 			return rails;
 		}
 
-		// Crafters on the network, summed per output item. Stations, storage and
-		// receivers hold stock but have no production rate, so they are not sources.
+		// The rail's source crafters, summed per output item. Storage and stations
+		// hold stock but make nothing, so the walk passes through them instead.
 		void CollectSources(const std::vector<ACrCrafter*>& crafters,
 		                    const std::vector<size_t>& sources, Cache& out)
 		{
@@ -215,12 +244,6 @@ namespace Waila
 					continue;
 
 				const std::string key = item->UniqueItemName.ToString();
-
-				if (out.sourceCount >= static_cast<int32_t>(kMaxSources))
-				{
-					out.truncated = true;
-					break;
-				}
 				++out.sourceCount;
 
 				auto found = index.find(key);
@@ -297,31 +320,31 @@ namespace Waila
 
 		// Rails are only compared by address here, never dereferenced. With actor
 		// pooling an address can come back as a different rail, which shows the old
-		// network's numbers for at most one refresh.
+		// rail's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
-		if (g_cache.members.count(actor) == 0 || now - g_cache.stamp >= kRefresh)
+		if (g_cache.rail != actor || now - g_cache.stamp >= kRefresh)
 		{
 			UWorld* world = UWorld::GetWorld();
 			if (!world)
 				return true;
 
 			g_cache = Cache{};
+			g_cache.rail  = actor;
 			g_cache.stamp = now;
 
 			RailNetwork::Scene scene;
 			const std::vector<const AActor*> rails    = GatherRails(world, scene);
-			const std::vector<ACrCrafter*>   crafters = GatherCrafters(world, scene);
+			const std::vector<ACrCrafter*>   crafters = GatherBuildings(world, scene);
+			GatherPathPoints(world, scene);
 
-			g_cache.members.insert(actor);
 			const auto self = std::find(rails.begin(), rails.end(), actor);
 			if (self != rails.end())
 			{
-				const RailNetwork::Network network = RailNetwork::CollectNetwork(
-					scene, static_cast<size_t>(self - rails.begin()), kMaxRails);
-				for (size_t i : network.rails)
-					g_cache.members.insert(rails[i]);
-				g_cache.truncated = network.truncated;
-				CollectSources(crafters, network.crafters, g_cache);
+				const RailNetwork::Graph   graph(scene);
+				const RailNetwork::Sources sources = graph.Find(
+					static_cast<size_t>(self - rails.begin()), kMaxRails, kMaxSources);
+				g_cache.truncated = sources.truncated;
+				CollectSources(crafters, sources.crafters, g_cache);
 			}
 
 			// Biggest flows first, so a cut-off list drops the smallest.

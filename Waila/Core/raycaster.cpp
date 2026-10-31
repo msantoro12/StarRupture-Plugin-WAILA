@@ -40,41 +40,12 @@ namespace Waila::Core
 		return true;
 	}
 
-	bool WailaRaycastSystem::PerformRaycast(float maxDistance, RaycastHit& outHit)
+	void WailaRaycastSystem::IgnoreWithHierarchy(AActor* actor, TArray<AActor*>& ignoreActors)
 	{
-		outHit = {};
-
-		// Obtain world and pawn once — both can become null during a map transition
-		UWorld* world = UWorld::GetWorld();
-		if (!world)
-			return false;
-
-		APawn* localPawn = GetLocalPlayer();
-
-		FVector eyeLocation;
-		FRotator eyeRotation;
-		if (!localPawn)
-		{
-			LOG_DEBUG("PerformRaycast: no local pawn");
-			return false;
-		}
-		localPawn->GetActorEyesViewPoint(&eyeLocation, &eyeRotation);
-
-		FVector direction = UKismetMathLibrary::GetForwardVector(eyeRotation);
-
-		// Push the ray origin slightly forward so it never starts inside the player's own geometry.
-		// The ignore-actor list covers most cases but some attached components still block at the
-		// exact eye position; 80 units is well past the player capsule radius and imperceptible to aim.
-		constexpr double kStartOffset = 80.0;
-		FVector startLocation = eyeLocation + direction * kStartOffset;
-		FVector endLocation = eyeLocation + direction * static_cast<double>(maxDistance);
-
-		// Build ignore list — exclude local player pawn and all its hierarchy
-		TArray<AActor*> ignoreActors;
-		ignoreActors.Add(localPawn);
+		ignoreActors.Add(actor);
 
 		// Also add all parent actors in the hierarchy
-		for (AActor* a = localPawn; a; )
+		for (AActor* a = actor; a; )
 		{
 			AActor* parent = a->GetAttachParentActor();
 			if (!parent)
@@ -87,9 +58,9 @@ namespace Waila::Core
 			a = (parent != a) ? parent : nullptr;
 		}
 
-		// Add all child actors attached to the pawn
+		// Add all child actors attached to the actor
 		TArray<AActor*> attachedActors;
-		localPawn->GetAttachedActors(&attachedActors, true, true);
+		actor->GetAttachedActors(&attachedActors, true, true);
 		for (AActor* child : attachedActors)
 		{
 			if (child)
@@ -97,6 +68,58 @@ namespace Waila::Core
 				ignoreActors.Add(child);
 			}
 		}
+	}
+
+	bool WailaRaycastSystem::PerformRaycast(float maxDistance, RaycastHit& outHit)
+	{
+		outHit = {};
+
+		// Obtain world and pawn once — both can become null during a map transition
+		UWorld* world = UWorld::GetWorld();
+		if (!world)
+			return false;
+
+		APawn* localPawn = GetLocalPlayer();
+		if (!localPawn)
+		{
+			LOG_DEBUG("PerformRaycast: no local pawn");
+			return false;
+		}
+
+		// Aim from the camera, where the crosshair is, so the ray also follows the
+		// building drone's camera. Max Distance still counts from what the camera
+		// looks through (the drone, or the player's eyes), so pulling the camera
+		// back does not shorten the reach. On foot both points are the same.
+		APlayerController* pc = UGameplayStatics::GetPlayerController(world, 0);
+		AActor* viewTarget = pc ? pc->GetViewTarget() : nullptr;
+		if (!viewTarget || !UKismetSystemLibrary::IsValid(viewTarget))
+			viewTarget = localPawn;
+
+		FVector eyeLocation;
+		FRotator eyeRotation;
+		viewTarget->GetActorEyesViewPoint(&eyeLocation, &eyeRotation);
+
+		FVector cameraLocation = eyeLocation;
+		FRotator cameraRotation = eyeRotation;
+		if (pc)
+			pc->GetPlayerViewPoint(&cameraLocation, &cameraRotation);
+
+		FVector direction = UKismetMathLibrary::GetForwardVector(cameraRotation);
+		const double reach = static_cast<double>(maxDistance) + UKismetMathLibrary::Vector_Distance(cameraLocation, eyeLocation);
+
+		// Push the ray origin slightly forward so it never starts inside the player's own geometry.
+		// The ignore-actor list covers most cases but some attached components still block at the
+		// exact eye position; 80 units is well past the player capsule radius and imperceptible to aim.
+		constexpr double kStartOffset = 80.0;
+		FVector startLocation = cameraLocation + direction * kStartOffset;
+		FVector endLocation = cameraLocation + direction * reach;
+
+		// Build ignore list — exclude the local player pawn, the actor the camera
+		// follows, and their hierarchies
+		TArray<AActor*> ignoreActors;
+		IgnoreWithHierarchy(localPawn, ignoreActors);
+		if (viewTarget != localPawn)
+			IgnoreWithHierarchy(viewTarget, ignoreActors);
 
 		FHitResult hitResult;
 		FLinearColor noColor = { 0.f, 0.f, 0.f, 0.f };

@@ -3,12 +3,16 @@
 // The drone rail topology, in plain C++ with no game types, so the same code
 // runs in the plugin and in Tests\RailNetworkTests.
 
-#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Waila::RailNetwork
@@ -18,184 +22,387 @@ namespace Waila::RailNetwork
 		double x = 0.0, y = 0.0, z = 0.0;
 	};
 
-	// The world positions of a rail's first and last spline point.
+	// The world positions of a rail's first and last spline point. Drones fly a
+	// rail from its start to its end. INFERRED from two captured saves: every
+	// crafter's rails start on one face of it (its output) and end on another
+	// (its inputs), and every input of a merger is a rail end.
 	struct Rail
 	{
 		Vec3 start;
 		Vec3 end;
 	};
 
-	// A crafter's actor bounds.
-	struct Crafter
+	// One socket of a path point, as the game names it.
+	struct NamedSocket
+	{
+		std::string name;
+		Vec3        at;
+	};
+
+	// A rail socket of a path point (a pole, rail support, junction, merger or
+	// lane). Sockets of one point with the same lane are connected.
+	struct Socket
+	{
+		size_t  point;
+		int32_t lane;
+		Vec3    at;
+	};
+
+	// A building drones bring items to or take them from: a crafter, storage, a
+	// drone station. `origin` and `extent` are its actor bounds.
+	struct Building
 	{
 		Vec3 origin;
 		Vec3 extent;
+		bool crafter = false;
 	};
+
+	constexpr int32_t kAnyLane = -1;
+
+	// The lane of a rail socket, from its name. A lane building carries parallel
+	// tracks that must not mix: its sockets are "Rail_<n>A" and "Rail_<n>B", and
+	// its plain "RailSocket" is track 0. Every other path point joins all its
+	// sockets (kAnyLane). Returns false for a socket that holds no rail.
+	inline bool SocketLane(std::string_view name, int32_t& outLane)
+	{
+		auto lower = [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+		auto startsWith = [&](std::string_view prefix)
+		{
+			if (name.size() < prefix.size())
+				return false;
+			for (size_t i = 0; i < prefix.size(); ++i)
+			{
+				if (lower(name[i]) != prefix[i])
+					return false;
+			}
+			return true;
+		};
+
+		if (!startsWith("rail"))
+			return false;
+
+		outLane = kAnyLane;
+		if (startsWith("rail_") && name.size() >= 7)
+		{
+			int32_t lane = 0;
+			size_t  i    = 5;
+			for (; i < name.size() && std::isdigit(static_cast<unsigned char>(name[i])); ++i)
+				lane = lane * 10 + (name[i] - '0');
+
+			const char side = i < name.size() ? lower(name[i]) : '\0';
+			if (i > 5 && i + 1 == name.size() && (side == 'a' || side == 'b'))
+				outLane = lane;
+		}
+		return true;
+	}
 
 	struct Scene
 	{
-		std::vector<Rail>    rails;
-		std::vector<Crafter> crafters;
+		std::vector<Rail>     rails;
+		std::vector<Socket>   sockets;
+		std::vector<Building> buildings;
+		size_t                points = 0;
+
+		// Adds one path point with all its sockets. Sockets that hold no rail are
+		// skipped.
+		void AddPathPoint(const std::vector<NamedSocket>& named)
+		{
+			const size_t first = sockets.size();
+			bool hasLanes = false;
+			for (const NamedSocket& s : named)
+			{
+				int32_t lane = kAnyLane;
+				if (!SocketLane(s.name, lane))
+					continue;
+				hasLanes = hasLanes || lane != kAnyLane;
+				sockets.push_back({ points, lane, s.at });
+			}
+			if (hasLanes)
+			{
+				for (size_t i = first; i < sockets.size(); ++i)
+				{
+					if (sockets[i].lane == kAnyLane)
+						sockets[i].lane = 0;
+				}
+			}
+			++points;
+		}
 	};
 
-	struct Network
+	struct Sources
 	{
-		std::vector<size_t> crafters;   // indices into Scene::crafters
-		std::vector<size_t> rails;      // indices into Scene::rails, the start rail first
+		std::vector<size_t> crafters;    // indices into Scene::buildings
+		size_t              rails = 0;   // how many rails the walk reached, the start one included
 		bool                truncated = false;
 	};
 
 	// INFERRED, as is everything about which buildings a rail serves: the SDK
-	// has no explicit building-to-rail link. ConnectedStartActor and
-	// ConnectedEndActor were null on every rail probed in a loaded save, so the
-	// topology comes from the rail splines instead. Two rails are neighbours when
-	// an end of one lies within kJoinTolerance of an end of the other. A crafter is
-	// a source when a rail end lies inside its bounds grown by kCrafterMargin, and
-	// the fill does not continue through that end. A building that only consumes
-	// from the rail cannot be told apart from one that feeds it.
-	constexpr double kJoinTolerance = 100.0;   // unreal units, 100 = 1 m
-	constexpr double kCrafterMargin = 200.0;   // unreal units, 200 = 2 m
+	// has no explicit building-to-rail link. ConnectedStartActor, ConnectedEndActor
+	// and SocketActor were null on every rail of two captured saves, so the
+	// topology comes from where each rail's spline ends sit.
+	//
+	// A rail end on a path point's rail socket belongs to that point: in both
+	// captures every such end lay within 0.5 units of its socket, and each socket
+	// held one rail. An end on the face of a supply building belongs to that
+	// building: those lay within 10 units of its bounds, and the next nearest end
+	// 100 units out.
+	//
+	// Path points the game has not spawned as actors leave their rail ends loose.
+	// A loose rail start is fed by the loose rail ends within kJoinTolerance: the
+	// sockets of a pole sit 30 units apart, those of a junction 76 to 108, and a
+	// merger's outer input 117 from its output. The next gap measured was 130.
+	constexpr double kSocketTolerance = 5.0;     // unreal units, 100 = 1 m
+	constexpr double kBuildingMargin  = 50.0;
+	constexpr double kJoinTolerance   = 120.0;
 
 	namespace Detail
 	{
-		inline bool InsideBox(const Vec3& p, const Crafter& box)
+		inline double DistSq(const Vec3& a, const Vec3& b)
 		{
-			return std::abs(p.x - box.origin.x) <= box.extent.x + kCrafterMargin
-			    && std::abs(p.y - box.origin.y) <= box.extent.y + kCrafterMargin
-			    && std::abs(p.z - box.origin.z) <= box.extent.z + kCrafterMargin;
+			const double x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
+			return x * x + y * y + z * z;
 		}
 
-		// Rail ends are bucketed in a grid of kJoinTolerance cells, so finding the ends
-		// near a point only checks the 27 cells around it.
-		struct Cell
+		// Points bucketed in cubes of `cell` units, so the points near a position
+		// are found by checking the 27 cubes around it. Queries reach at most one
+		// cell out.
+		class PointGrid
 		{
-			int64_t x, y, z;
-			bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; }
-		};
+		public:
+			explicit PointGrid(double cell) : m_cell(cell) {}
 
-		struct CellHash
-		{
-			size_t operator()(const Cell& c) const
+			void Add(size_t id, const Vec3& at) { m_cells[CellOf(at)].push_back({ id, at }); }
+
+			template <typename Fn>
+			void ForNear(const Vec3& at, Fn&& fn) const
 			{
-				return static_cast<size_t>(c.x * 73856093LL ^ c.y * 19349663LL ^ c.z * 83492791LL);
-			}
-		};
-
-		inline Cell CellOf(const Vec3& p)
-		{
-			return { static_cast<int64_t>(std::floor(p.x / kJoinTolerance)),
-			         static_cast<int64_t>(std::floor(p.y / kJoinTolerance)),
-			         static_cast<int64_t>(std::floor(p.z / kJoinTolerance)) };
-		}
-
-		struct RailEnd
-		{
-			size_t rail;
-			Vec3   at;
-		};
-	}
-
-	// Flood fill over the rail segments, from `start` outwards. Rails meet where
-	// their spline ends do, so two rails are neighbours when an end of one lies
-	// within kJoinTolerance of an end of the other.
-	// An end that no other rail meets and that lies inside a crafter's bounds
-	// makes that crafter a source. Nothing continues from such an end, so a
-	// factory's input and output rails do not merge into one network. Rails only
-	// join end to end: the sockets of a junction, roundabout or vertical connector
-	// sit metres apart, so the fill does not cross those buildings.
-	inline Network CollectNetwork(const Scene& scene, size_t start, size_t maxRails)
-	{
-		using namespace Detail;
-
-		Network out;
-		if (start >= scene.rails.size())
-			return out;
-
-		std::unordered_map<Cell, std::vector<RailEnd>, CellHash> grid;
-		for (size_t i = 0; i < scene.rails.size(); ++i)
-		{
-			grid[CellOf(scene.rails[i].start)].push_back({ i, scene.rails[i].start });
-			grid[CellOf(scene.rails[i].end)].push_back({ i, scene.rails[i].end });
-		}
-
-		std::vector<bool>   seen(scene.rails.size(), false);
-		std::vector<size_t> queue{ start };
-		seen[start] = true;
-		std::unordered_set<size_t> direct;
-
-		const double toleranceSq = kJoinTolerance * kJoinTolerance;
-
-		for (size_t head = 0; head < queue.size(); ++head)
-		{
-			const size_t current = queue[head];
-
-			for (const Vec3& at : { scene.rails[current].start, scene.rails[current].end })
-			{
-				// The other rails whose ends meet this one.
-				std::vector<size_t> meets;
 				const Cell c = CellOf(at);
 				for (int64_t dx = -1; dx <= 1; ++dx)
 				for (int64_t dy = -1; dy <= 1; ++dy)
 				for (int64_t dz = -1; dz <= 1; ++dz)
 				{
-					const auto it = grid.find({ c.x + dx, c.y + dy, c.z + dz });
-					if (it == grid.end())
+					const auto it = m_cells.find({ c.x + dx, c.y + dy, c.z + dz });
+					if (it == m_cells.end())
 						continue;
-
-					for (const RailEnd& other : it->second)
-					{
-						if (other.rail == current)
-							continue;
-
-						const double ex = at.x - other.at.x, ey = at.y - other.at.y, ez = at.z - other.at.z;
-						if (ex * ex + ey * ey + ez * ez <= toleranceSq)
-							meets.push_back(other.rail);
-					}
+					for (const Entry& e : it->second)
+						fn(e.id, e.at);
 				}
+			}
 
-				// An end nothing else meets is where the rail reaches a building.
-				// It serves the one crafter whose bounds hold it, and the fill stops.
-				if (meets.empty())
+		private:
+			struct Cell
+			{
+				int64_t x, y, z;
+				bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; }
+			};
+
+			struct CellHash
+			{
+				size_t operator()(const Cell& c) const
 				{
-					size_t nearest   = scene.crafters.size();
-					double nearestSq = 0.0;
-					for (size_t b = 0; b < scene.crafters.size(); ++b)
-					{
-						const Crafter& box = scene.crafters[b];
-						if (!InsideBox(at, box))
-							continue;
-
-						const double bx = at.x - box.origin.x, by = at.y - box.origin.y, bz = at.z - box.origin.z;
-						const double sq = bx * bx + by * by + bz * bz;
-						if (nearest == scene.crafters.size() || sq < nearestSq)
-						{
-							nearest   = b;
-							nearestSq = sq;
-						}
-					}
-					if (nearest != scene.crafters.size() && direct.insert(nearest).second)
-						out.crafters.push_back(nearest);
-					continue;
+					return static_cast<size_t>(c.x * 73856093LL ^ c.y * 19349663LL ^ c.z * 83492791LL);
 				}
+			};
 
-				for (size_t next : meets)
+			struct Entry
+			{
+				size_t id;
+				Vec3   at;
+			};
+
+			Cell CellOf(const Vec3& p) const
+			{
+				return { static_cast<int64_t>(std::floor(p.x / m_cell)),
+				         static_cast<int64_t>(std::floor(p.y / m_cell)),
+				         static_cast<int64_t>(std::floor(p.z / m_cell)) };
+			}
+
+			double                                           m_cell;
+			std::unordered_map<Cell, std::vector<Entry>, CellHash> m_cells;
+		};
+	}
+
+	// What a rail end sits on.
+	struct Port
+	{
+		enum class Kind : uint8_t { Loose, Socket, Building };
+
+		Kind   kind  = Kind::Loose;
+		size_t index = 0;   // into Scene::sockets or Scene::buildings
+	};
+
+	class Graph
+	{
+	public:
+		explicit Graph(const Scene& scene)
+			: m_scene(scene), m_looseEnds(kJoinTolerance)
+		{
+			Detail::PointGrid sockets(kJoinTolerance);
+			for (size_t i = 0; i < scene.sockets.size(); ++i)
+				sockets.Add(i, scene.sockets[i].at);
+
+			m_start.resize(scene.rails.size());
+			m_endsAtBuilding.resize(scene.buildings.size());
+
+			for (size_t r = 0; r < scene.rails.size(); ++r)
+			{
+				m_start[r] = Place(scene.rails[r].start, sockets);
+
+				const Port end = Place(scene.rails[r].end, sockets);
+				switch (end.kind)
 				{
-					if (seen[next])
-						continue;
-
-					if (queue.size() >= maxRails)
-					{
-						out.truncated = true;
-						out.rails = std::move(queue);
-						return out;
-					}
-					seen[next] = true;
-					queue.push_back(next);
+				case Port::Kind::Socket:
+				{
+					const Socket& s = scene.sockets[end.index];
+					m_endsAtPoint[{ s.point, s.lane }].push_back(r);
+					break;
+				}
+				case Port::Kind::Building:
+					m_endsAtBuilding[end.index].push_back(r);
+					break;
+				case Port::Kind::Loose:
+					m_looseEnds.Add(r, scene.rails[r].end);
+					break;
 				}
 			}
 		}
 
-		out.rails = std::move(queue);
-		return out;
-	}
+		const Port& StartOf(size_t rail) const { return m_start[rail]; }
+
+		// The crafters whose output reaches `rail`, walking against the flow: from
+		// the rail's start to the rails that end there, and on. A crafter at a
+		// rail's start is a source and the walk stops there, so a factory's input
+		// rails never show the factory they feed. Other supply buildings, such as
+		// storage, pass their input rails through to their output rails.
+		Sources Find(size_t rail, size_t maxRails, size_t maxSources) const
+		{
+			Sources out;
+			if (rail >= m_scene.rails.size())
+				return out;
+
+			std::vector<bool>          seen(m_scene.rails.size(), false);
+			std::vector<size_t>        queue{ rail };
+			std::unordered_set<size_t> found;
+			seen[rail] = true;
+
+			auto visit = [&](size_t next)
+			{
+				if (seen[next])
+					return true;
+				if (queue.size() >= maxRails)
+				{
+					out.truncated = true;
+					return false;
+				}
+				seen[next] = true;
+				queue.push_back(next);
+				return true;
+			};
+
+			for (size_t head = 0; head < queue.size() && !out.truncated; ++head)
+			{
+				const size_t current = queue[head];
+				const Port&  start   = m_start[current];
+
+				switch (start.kind)
+				{
+				case Port::Kind::Socket:
+				{
+					const Socket& s = m_scene.sockets[start.index];
+					const auto it = m_endsAtPoint.find({ s.point, s.lane });
+					if (it == m_endsAtPoint.end())
+						break;
+					for (size_t next : it->second)
+					{
+						if (!visit(next))
+							break;
+					}
+					break;
+				}
+				case Port::Kind::Building:
+				{
+					if (m_scene.buildings[start.index].crafter)
+					{
+						if (found.count(start.index))
+							break;
+						if (out.crafters.size() >= maxSources)
+						{
+							out.truncated = true;
+							break;
+						}
+						found.insert(start.index);
+						out.crafters.push_back(start.index);
+						break;
+					}
+					for (size_t next : m_endsAtBuilding[start.index])
+					{
+						if (!visit(next))
+							break;
+					}
+					break;
+				}
+				case Port::Kind::Loose:
+				{
+					const Vec3&  at    = m_scene.rails[current].start;
+					const double limit = kJoinTolerance * kJoinTolerance;
+					bool         more  = true;
+					m_looseEnds.ForNear(at, [&](size_t next, const Vec3& end)
+					{
+						if (more && Detail::DistSq(at, end) <= limit)
+							more = visit(next);
+					});
+					break;
+				}
+				}
+			}
+
+			out.rails = queue.size();
+			return out;
+		}
+
+	private:
+		Port Place(const Vec3& at, const Detail::PointGrid& sockets) const
+		{
+			Port   port;
+			double best = kSocketTolerance * kSocketTolerance;
+			sockets.ForNear(at, [&](size_t i, const Vec3& socket)
+			{
+				const double sq = Detail::DistSq(at, socket);
+				if (sq <= best)
+				{
+					best       = sq;
+					port.kind  = Port::Kind::Socket;
+					port.index = i;
+				}
+			});
+			if (port.kind == Port::Kind::Socket)
+				return port;
+
+			// The building whose grown bounds hold the end, the nearest centre
+			// winning when bounds overlap.
+			for (size_t b = 0; b < m_scene.buildings.size(); ++b)
+			{
+				const Building& box = m_scene.buildings[b];
+				if (std::abs(at.x - box.origin.x) > box.extent.x + kBuildingMargin
+				 || std::abs(at.y - box.origin.y) > box.extent.y + kBuildingMargin
+				 || std::abs(at.z - box.origin.z) > box.extent.z + kBuildingMargin)
+					continue;
+
+				const double sq = Detail::DistSq(at, box.origin);
+				if (port.kind == Port::Kind::Loose || sq < best)
+				{
+					best       = sq;
+					port.kind  = Port::Kind::Building;
+					port.index = b;
+				}
+			}
+			return port;
+		}
+
+		const Scene&                                          m_scene;
+		std::vector<Port>                                     m_start;
+		std::map<std::pair<size_t, int32_t>, std::vector<size_t>> m_endsAtPoint;
+		std::vector<std::vector<size_t>>                      m_endsAtBuilding;
+		Detail::PointGrid                                     m_looseEnds;
+	};
 }

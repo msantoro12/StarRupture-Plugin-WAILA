@@ -1,4 +1,5 @@
-Drone rails show the crafters on their network, summed per item as items per minute (now and at full speed)
-Rails join where their ends meet, so the card works on rails loaded from a save
-A crafter counts as a source when a rail end reaches it; a factory's input and output rails stay separate
-The network stops at junctions, roundabouts and vertical connectors
+Drone rails show the crafters that feed them, summed per item as items per minute (now and at full speed)
+Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track, and through storage to the crafters filling it
+Each rail on a platform shows its own sources; a factory's input rails no longer show the factory they feed
+Idle crafters count with the recipe they are set to
+The card follows the camera, so it works from the building drone; Max Distance counts from the drone
