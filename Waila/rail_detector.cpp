@@ -8,9 +8,9 @@
 #include "AuItems_classes.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,22 +24,23 @@ namespace Waila
 	{
 		// Bounds for the network scan. Both stop a runaway fill and set
 		// RailInfo::truncated when they bite.
-		constexpr size_t kMaxNodes   = 256;
+		constexpr size_t kMaxRails   = 1024;
 		constexpr size_t kMaxSources = 256;
 
 		// INFERRED, as is everything about which buildings a rail serves: the SDK
 		// has no explicit building-to-rail link. ConnectedStartActor and
-		// ConnectedEndActor are plain AActor*, and the rail mass spawner snaps rail
-		// ends to a building's logistics socket, so an end actor is either a
-		// building (counted directly, and the fill stops there) or a pole. Poles
-		// also pick up crafters within kAttachRadius (unreal units, 1200 = 12 m),
-		// the way cargo_sender_detector matches a sender by distance. A building
-		// that only consumes from the rail cannot be told apart from one that feeds it.
+		// ConnectedEndActor were null on every rail probed in a loaded save, so the
+		// topology comes from the rail splines instead. Two rails are neighbours when
+		// an end of one lies within kJoinTolerance of an end of the other. A crafter is
+		// a source when a rail end lies inside its bounds grown by kCrafterMargin, and
+		// the fill does not continue through that end. A building that only consumes
+		// from the rail cannot be told apart from one that feeds it.
 		//
 		// Only actors the game has spawned are visible to GetAllActorsOfClass, and
 		// player buildings are streamed in around the camera (INFERRED), so a long
 		// rail can be cut short without `truncated` being set.
-		constexpr double kAttachRadius = 1200.0;
+		constexpr double kJoinTolerance = 100.0;   // unreal units, 100 = 1 m
+		constexpr double kCrafterMargin = 200.0;   // unreal units, 200 = 2 m
 
 		constexpr std::chrono::milliseconds kRefresh{ 1000 };
 
@@ -74,105 +75,6 @@ namespace Waila
 		};
 
 		Cache g_cache;
-
-		// WailaRailProbe: temporary diagnostic. What the last scan saw, as text,
-		// logged once each time the looked-at rail changes.
-		std::string ProbeActor(AActor* actor)
-		{
-			if (!actor)
-				return "null";
-			if (!UKismetSystemLibrary::IsValid(actor))
-				return "invalid";
-			return (actor->Class ? actor->Class->GetName() : std::string("?")) + "/" + actor->GetName();
-		}
-
-		struct Probe
-		{
-			int32_t                    railsInWorld    = 0;
-			int32_t                    craftersInWorld = 0;
-			size_t                     railsVisited    = 0;
-			std::map<std::string, int> nodeClasses;
-			std::string                sources;
-			int32_t                    attached        = 0;
-			int32_t                    noRecipe        = 0;
-			int32_t                    nullEnds        = 0;
-			int32_t                    invalidEnds     = 0;
-
-			// The log line is capped at 1 KB, so only the first few are named.
-			void AddSource(AActor* crafter, bool atEnd, const std::string& what)
-			{
-				if (++attached <= 6)
-					sources += " " + ProbeActor(crafter) + (atEnd ? "(end)=" : "(near)=") + what;
-			}
-		};
-
-		Probe g_probe;
-
-		// Rails here are only compared by address, never dereferenced. A line is
-		// logged once the crosshair has rested on a rail for kProbeDwell, so a
-		// junction that flips between two rails does not log every frame.
-		constexpr std::chrono::milliseconds kProbeDwell{ 1000 };
-		const AActor*                         g_probeRail   = nullptr;
-		const AActor*                         g_probeLogged = nullptr;
-		std::chrono::steady_clock::time_point g_probeSince{};
-
-		// The crafter closest to a point, as "Class/Name@12.3m", whether or not it
-		// is attached. Settles whether a rail end sits at a building with no actor.
-		std::string ProbeNearestCrafter(const TArray<AActor*>& crafters, const FVector& at)
-		{
-			AActor* best = nullptr;
-			double  bestSq = 0.0;
-			for (int32_t i = 0; i < crafters.Num(); ++i)
-			{
-				AActor* c = crafters[i];
-				if (!c || !UKismetSystemLibrary::IsValid(c))
-					continue;
-				const FVector p = c->K2_GetActorLocation();
-				const double dx = p.X - at.X, dy = p.Y - at.Y, dz = p.Z - at.Z;
-				const double sq = dx * dx + dy * dy + dz * dz;
-				if (!best || sq < bestSq)
-				{
-					best   = c;
-					bestSq = sq;
-				}
-			}
-			if (!best)
-				return "none";
-
-			char buf[32];
-			snprintf(buf, sizeof(buf), "@%.1fm", std::sqrt(bestSq) / 100.0);
-			return ProbeActor(best) + buf;
-		}
-
-		void ProbeLog(UWorld* world, ACrDronePathPointConnection* rail, const std::string& filter)
-		{
-			std::string nearStart = "?", nearEnd = "?";
-			USplineComponent* spline = rail->Spline;
-			if (world && spline && UKismetSystemLibrary::IsValid(spline))
-			{
-				const int32_t points = spline->GetNumberOfSplinePoints();
-				if (points > 0)
-				{
-					TArray<AActor*> crafters{};
-					UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &crafters);
-					nearStart = ProbeNearestCrafter(crafters, spline->GetLocationAtSplinePoint(0, ESplineCoordinateSpace::World));
-					nearEnd   = ProbeNearestCrafter(crafters, spline->GetLocationAtSplinePoint(points - 1, ESplineCoordinateSpace::World));
-				}
-			}
-
-			std::string nodes;
-			for (const auto& [cls, n] : g_probe.nodeClasses)
-				nodes += " " + cls + "x" + std::to_string(n);
-
-			LOG_INFO("WailaRailProbe: rail=%s filter=%s start=%s end=%s nearStart=%s nearEnd=%s | sources:%s | attached=%d noRecipe=%d crafters=%d | rails=%d visited=%zu nullEnds=%d invalidEnds=%d | nodes:%s",
-				ProbeActor(rail).c_str(), filter.empty() ? "any" : filter.c_str(),
-				ProbeActor(rail->ConnectedStartActor).c_str(), ProbeActor(rail->ConnectedEndActor).c_str(),
-				nearStart.c_str(), nearEnd.c_str(),
-				g_probe.sources.empty() ? " none" : g_probe.sources.c_str(),
-				g_probe.attached, g_probe.noRecipe, g_probe.craftersInWorld,
-				g_probe.railsInWorld, g_probe.railsVisited, g_probe.nullEnds, g_probe.invalidEnds,
-				nodes.empty() ? " none" : nodes.c_str());
-		}
 
 		// Items per minute of one crafter, from the recipe it is working on.
 		// full = output count / BuildTime x CraftingSpeed x 60.
@@ -242,79 +144,172 @@ namespace Waila
 			return true;
 		}
 
+		// A crafter and its bounds, fetched once per scan. The pointer is only used
+		// inside that scan.
+		struct CrafterBox
+		{
+			ACrCrafter* crafter;
+			FVector     origin;
+			FVector     extent;
+		};
+
+		std::vector<CrafterBox> GatherCrafters(UWorld* world)
+		{
+			TArray<AActor*> all{};
+			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
+
+			std::vector<CrafterBox> boxes;
+			for (int32_t i = 0; i < all.Num(); ++i)
+			{
+				auto* crafter = static_cast<ACrCrafter*>(all[i]);
+				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
+					continue;
+
+				CrafterBox box{ crafter, {}, {} };
+				crafter->GetActorBounds(false, &box.origin, &box.extent, false);
+				boxes.push_back(box);
+			}
+			return boxes;
+		}
+
+		// World positions of a rail's first and last spline point. False when the
+		// spline is missing.
+		bool RailEnds(ACrDronePathPointConnection* rail, std::array<FVector, 2>& out)
+		{
+			USplineComponent* spline = rail->Spline;
+			if (!spline || !UKismetSystemLibrary::IsValid(spline))
+				return false;
+
+			const int32_t points = spline->GetNumberOfSplinePoints();
+			if (points < 2)
+				return false;
+
+			out[0] = spline->GetLocationAtSplinePoint(0, ESplineCoordinateSpace::World);
+			out[1] = spline->GetLocationAtSplinePoint(points - 1, ESplineCoordinateSpace::World);
+			return true;
+		}
+
+		bool InsideBox(const FVector& p, const CrafterBox& box)
+		{
+			return std::abs(p.X - box.origin.X) <= box.extent.X + kCrafterMargin
+			    && std::abs(p.Y - box.origin.Y) <= box.extent.Y + kCrafterMargin
+			    && std::abs(p.Z - box.origin.Z) <= box.extent.Z + kCrafterMargin;
+		}
+
+		// Rail ends are bucketed in a grid of kJoinTolerance cells, so finding the ends
+		// near a point only checks the 27 cells around it.
+		struct Cell
+		{
+			int64_t x, y, z;
+			bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; }
+		};
+
+		struct CellHash
+		{
+			size_t operator()(const Cell& c) const
+			{
+				return static_cast<size_t>(c.x * 73856093LL ^ c.y * 19349663LL ^ c.z * 83492791LL);
+			}
+		};
+
+		Cell CellOf(const FVector& p)
+		{
+			return { static_cast<int64_t>(std::floor(p.X / kJoinTolerance)),
+			         static_cast<int64_t>(std::floor(p.Y / kJoinTolerance)),
+			         static_cast<int64_t>(std::floor(p.Z / kJoinTolerance)) };
+		}
+
+		struct RailEnd
+		{
+			size_t  rail;   // index into the scan's rail list
+			FVector at;
+		};
+
 		// Flood fill over the rail segments, from the looked-at one outwards. Rails
-		// meet at their end actors, so two rails are neighbours when they share one.
-		// A crafter at an end is a source and the fill does not continue through it,
-		// or a factory's input and output rails would merge into one network.
-		// Fills outPoles with the position of every other end actor reached,
-		// outDirect with the crafters, and outRails with the rails visited.
+		// meet where their spline ends do, so two rails are neighbours when an end of
+		// one lies within kJoinTolerance of an end of the other.
+		// A crafter at an end is a source and the fill does not continue through that
+		// end, or a factory's input and output rails would merge into one network.
+		// Fills outDirect with the crafters and outRails with the rails visited.
 		void CollectNetwork(UWorld* world, ACrDronePathPointConnection* start,
-		                    std::vector<FVector>& outPoles, std::unordered_set<const AActor*>& outDirect,
+		                    const std::vector<CrafterBox>& crafters,
+		                    std::unordered_set<const AActor*>& outDirect,
 		                    std::unordered_set<const AActor*>& outRails, bool& outTruncated)
 		{
 			TArray<AActor*> all{};
 			UGameplayStatics::GetAllActorsOfClass(world, ACrDronePathPointConnection::StaticClass(), &all);
 
-			g_probe.railsInWorld = all.Num();
-
-			std::unordered_map<const AActor*, std::vector<ACrDronePathPointConnection*>> byEnd;
+			std::vector<ACrDronePathPointConnection*>                rails;
+			std::vector<std::array<FVector, 2>>                      ends;
+			std::unordered_map<Cell, std::vector<RailEnd>, CellHash> grid;
 			for (int32_t i = 0; i < all.Num(); ++i)
 			{
 				auto* rail = static_cast<ACrDronePathPointConnection*>(all[i]);
-				if (!rail || !UKismetSystemLibrary::IsValid(rail))
+				std::array<FVector, 2> e;
+				if (!rail || !UKismetSystemLibrary::IsValid(rail) || !RailEnds(rail, e))
 					continue;
-				if (rail->ConnectedStartActor) byEnd[rail->ConnectedStartActor].push_back(rail);
-				if (rail->ConnectedEndActor)   byEnd[rail->ConnectedEndActor].push_back(rail);
+
+				grid[CellOf(e[0])].push_back({ rails.size(), e[0] });
+				grid[CellOf(e[1])].push_back({ rails.size(), e[1] });
+				rails.push_back(rail);
+				ends.push_back(e);
 			}
 
-			std::unordered_set<const AActor*> seenNodes;
-			std::unordered_set<const AActor*>& seenRails = outRails;
-			seenRails.insert(start);
-			std::vector<ACrDronePathPointConnection*> queue{ start };
+			outRails.insert(start);
+
+			const auto startIt = std::find(rails.begin(), rails.end(), start);
+			if (startIt == rails.end())
+				return;
+
+			std::vector<bool>   seen(rails.size(), false);
+			std::vector<size_t> queue{ static_cast<size_t>(startIt - rails.begin()) };
+			seen[queue[0]] = true;
+
+			const double toleranceSq = kJoinTolerance * kJoinTolerance;
 
 			for (size_t head = 0; head < queue.size(); ++head)
 			{
-				ACrDronePathPointConnection* rail = queue[head];
-				AActor* ends[2] = { rail->ConnectedStartActor, rail->ConnectedEndActor };
-
-				for (AActor* node : ends)
+				for (const FVector& at : ends[queue[head]])
 				{
-					if (!node)
+					bool atCrafter = false;
+					for (const CrafterBox& box : crafters)
 					{
-						++g_probe.nullEnds;
-						continue;
+						if (InsideBox(at, box))
+						{
+							outDirect.insert(box.crafter);
+							atCrafter = true;
+						}
 					}
-					if (!seenNodes.insert(node).second)
+					if (atCrafter)
 						continue;
 
-					if (seenNodes.size() > kMaxNodes)
+					const Cell c = CellOf(at);
+					for (int64_t dx = -1; dx <= 1; ++dx)
+					for (int64_t dy = -1; dy <= 1; ++dy)
+					for (int64_t dz = -1; dz <= 1; ++dz)
 					{
-						outTruncated = true;
-						return;
-					}
+						const auto it = grid.find({ c.x + dx, c.y + dy, c.z + dz });
+						if (it == grid.end())
+							continue;
 
-					if (!UKismetSystemLibrary::IsValid(node))
-					{
-						++g_probe.invalidEnds;
-						continue;
-					}
+						for (const RailEnd& other : it->second)
+						{
+							if (seen[other.rail])
+								continue;
 
-					++g_probe.nodeClasses[node->Class ? node->Class->GetName() : "?"];
+							const double ex = at.X - other.at.X, ey = at.Y - other.at.Y, ez = at.Z - other.at.Z;
+							if (ex * ex + ey * ey + ez * ez > toleranceSq)
+								continue;
 
-					if (node->IsA(ACrCrafter::StaticClass()))
-					{
-						outDirect.insert(node);
-						continue;
-					}
-					outPoles.push_back(node->K2_GetActorLocation());
-
-					auto it = byEnd.find(node);
-					if (it == byEnd.end())
-						continue;
-					for (ACrDronePathPointConnection* next : it->second)
-					{
-						if (seenRails.insert(next).second)
-							queue.push_back(next);
+							if (queue.size() >= kMaxRails)
+							{
+								outTruncated = true;
+								return;
+							}
+							seen[other.rail] = true;
+							queue.push_back(other.rail);
+							outRails.insert(rails[other.rail]);
+						}
 					}
 				}
 			}
@@ -322,39 +317,15 @@ namespace Waila
 
 		// Crafters on the network, summed per output item. Stations, storage and
 		// receivers hold stock but have no production rate, so they are not sources.
-		void CollectSources(UWorld* world, const std::vector<FVector>& poles,
+		void CollectSources(const std::vector<CrafterBox>& crafters,
 		                    const std::unordered_set<const AActor*>& direct, Cache& out)
 		{
-			TArray<AActor*> all{};
-			UGameplayStatics::GetAllActorsOfClass(world, ACrCrafter::StaticClass(), &all);
-
-			g_probe.craftersInWorld = all.Num();
-
-			const double radiusSq = kAttachRadius * kAttachRadius;
 			std::unordered_map<std::string, size_t> index;
 
-			for (int32_t i = 0; i < all.Num(); ++i)
+			for (const CrafterBox& box : crafters)
 			{
-				auto* crafter = static_cast<ACrCrafter*>(all[i]);
-				if (!crafter || !UKismetSystemLibrary::IsValid(crafter))
-					continue;
-
-				const bool atEnd = direct.count(crafter) != 0;
-				bool attached = atEnd;
-				if (!attached)
-				{
-					const FVector at = crafter->K2_GetActorLocation();
-					for (const FVector& n : poles)
-					{
-						const double dx = at.X - n.X, dy = at.Y - n.Y, dz = at.Z - n.Z;
-						if (dx * dx + dy * dy + dz * dz <= radiusSq)
-						{
-							attached = true;
-							break;
-						}
-					}
-				}
-				if (!attached)
+				ACrCrafter* crafter = box.crafter;
+				if (direct.count(crafter) == 0)
 					continue;
 
 				UAuItemDataBase* item = nullptr;
@@ -363,14 +334,9 @@ namespace Waila
 
 				// No recipe means no item to attribute anything to.
 				if (!item)
-				{
-					++g_probe.noRecipe;
-					g_probe.AddSource(crafter, atEnd, "no-recipe");
 					continue;
-				}
 
 				const std::string key = item->UniqueItemName.ToString();
-				g_probe.AddSource(crafter, atEnd, key);
 
 				if (out.sourceCount >= static_cast<int32_t>(kMaxSources))
 				{
@@ -463,29 +429,15 @@ namespace Waila
 
 			g_cache = Cache{};
 			g_cache.stamp = now;
-			g_probe = Probe{};
 
-			std::vector<FVector> poles;
+			const std::vector<CrafterBox> crafters = GatherCrafters(world);
 			std::unordered_set<const AActor*> direct;
-			CollectNetwork(world, rail, poles, direct, g_cache.members, g_cache.truncated);
-			CollectSources(world, poles, direct, g_cache);
+			CollectNetwork(world, rail, crafters, direct, g_cache.members, g_cache.truncated);
+			CollectSources(crafters, direct, g_cache);
 
 			// Biggest flows first, so a cut-off list drops the smallest.
 			std::stable_sort(g_cache.tallies.begin(), g_cache.tallies.end(),
 				[](const Tally& a, const Tally& b) { return a.maxPerMin > b.maxPerMin; });
-
-			g_probe.railsVisited = g_cache.members.size();
-		}
-
-		if (g_probeRail != actor)
-		{
-			g_probeRail  = actor;
-			g_probeSince = now;
-		}
-		else if (g_probeLogged != actor && now - g_probeSince >= kProbeDwell)
-		{
-			g_probeLogged = actor;
-			ProbeLog(UWorld::GetWorld(), rail, filterUnique);
 		}
 
 		outInfo.truncated = g_cache.truncated;
@@ -519,8 +471,5 @@ namespace Waila
 	void RailDetector::Reset()
 	{
 		g_cache = Cache{};
-		g_probe = Probe{};
-		g_probeRail   = nullptr;
-		g_probeLogged = nullptr;
 	}
 }

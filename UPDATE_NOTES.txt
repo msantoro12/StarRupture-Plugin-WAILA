@@ -1,0 +1,3 @@
+Drone rails show the crafters on their network, summed per item as items per minute (now and at full speed)
+Rails join where their ends meet, so the card works on rails loaded from a save
+A crafter counts as a source when a rail end reaches it; a factory's input and output rails are no longer merged
