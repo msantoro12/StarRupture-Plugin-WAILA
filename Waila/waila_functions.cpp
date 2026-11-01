@@ -21,6 +21,8 @@ namespace Waila::Functions
         if (!self || !scanner)
             return;
 
+        Features::Declare(self, scanner);
+
         // Optional: each backs one detector panel that already degrades on its
         // own, which is what the old scan-at-init path did. The loader still
         // lists a miss for the user.
@@ -30,15 +32,14 @@ namespace Waila::Functions
         // shape lined up somewhere. Calling an address that merely looked like a
         // function is the failure this is here to prevent.
         if (uintptr_t addr = PluginMap::Function(scanner, self,
-                "UCrCraftingComponent::GetCraftingFragment", kGetCraftingFragmentPattern,
+                Fields::Keys::GetCraftingFragment, kGetCraftingFragmentPattern,
                 PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
             s_getCraftingFragment = reinterpret_cast<FGetCraftingFragment>(addr);
         else
             LOG_WARN("WailaFunctions: GetCraftingFragment unresolved");
 
         if (uintptr_t addr = PluginMap::Function(scanner, self,
-                "UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal",
-                kGetStoredItemsContainerInternalPattern, PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
+                Fields::Keys::GetStoredItemsContainerInternal, kGetStoredItemsContainerInternalPattern, PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
             s_getStoredItemsContainerInternal = reinterpret_cast<FGetStoredItemsContainerInternal>(addr);
         else
             LOG_WARN("WailaFunctions: GetStoredItemsContainerInternal unresolved");

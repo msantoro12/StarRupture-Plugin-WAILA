@@ -14,6 +14,7 @@
 #include "plugin_helpers.h"
 
 #include <string>
+#include <vector>
 
 // Every member of a game class WAILA reads, taken from the loader's map for the
 // running game build (see plugin_map.h). Resolved once in OnPluginLoadHooks by
@@ -86,6 +87,27 @@ namespace Waila::Fields
 	inline auto SenderReceiverSize     = SR_SIZE_CHECK(FCrSenderReceiverData);
 	inline auto ConnectionDataSize     = SR_SIZE_CHECK(FCrPackageTransportConnectionData);
 
+	// The map keys of the two game functions WAILA calls, so the resolves and the
+	// feature declarations below spell each one once.
+	namespace Keys
+	{
+		inline constexpr const char* GetCraftingFragment = "UCrCraftingComponent::GetCraftingFragment";
+		inline constexpr const char* GetStoredItemsContainerInternal =
+			"UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal";
+	}
+
+	// The map keys of a feature's fields, as the loader sees them.
+	inline void AddKey(std::vector<const char*>& keys, const char* key) { keys.push_back(key); }
+	inline void AddKey(std::vector<const char*>& keys, const PluginFieldSpec& field) { keys.push_back(field.key); }
+
+	template <class... Key>
+	std::vector<const char*> KeysOf(const Key&... keys)
+	{
+		std::vector<const char*> all;
+		(AddKey(all, keys), ...);
+		return all;
+	}
+
 	// Asks the loader for every row above. False when any did not resolve; the
 	// loader has then recorded the failure and refuses the plugin.
 	bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner);
@@ -139,4 +161,50 @@ namespace Waila::Fields
 		const SDK::FText* text = ItemName.In(static_cast<const void*>(item));
 		return text ? SDK::UKismetTextLibrary::Conv_TextToString(*text).ToString() : std::string();
 	}
+}
+
+// The parts of WAILA that can be off while the rest runs. Each lists the keys
+// only it needs. Buildings (a building's name and description, and the power
+// and cooler cards) and Items (item names and what a container holds) sit under
+// every card that names a building or lists items, so each card checks the
+// parts it builds on: a crafter needs Buildings, Items and Crafters; a drone
+// rail also needs Drone rails; a package sender needs Package transport, and a
+// receiver needs Buildings and Items. Declared in OnPluginLoadHooks before any
+// key is resolved. WAILA's config has no entry that belongs to one part.
+namespace Waila::Features
+{
+	using namespace Waila::Fields;
+
+	inline PluginMap::Feature Buildings{ "buildings", "Building names and descriptions",
+		KeysOf(PlacementData, BuildingName, BuildingDesc, PlacementSockets, PlacementSocketSize), {} };
+
+	inline PluginMap::Feature Items{ "items", "Item names and stored items",
+		KeysOf(Keys::GetStoredItemsContainerInternal, ItemName, UniqueItemName, ItemStorage, GridColumns,
+			GridRows, StorageContainerSize, StorageItemSize), {} };
+
+	inline PluginMap::Feature Crafters{ "crafters", "Crafter recipes and progress",
+		KeysOf(Keys::GetCraftingFragment, CraftComponent, CraftingSettings, ItemsToCraft, NeededResources,
+			RecipeOutputItem, RecipeBuildTime, InItemStorage, CraftItemSize, RecipeOrderSize,
+			CraftingFragmentSize, CraftingSettingsSize), {} };
+
+	inline PluginMap::Feature DroneRails{ "drone-rails", "Drone rails",
+		KeysOf(SocketsData, Spline, SocketDataSize), {} };
+
+	inline PluginMap::Feature PackageTransport{ "package-transport", "Package transport",
+		KeysOf(PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
+			ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
+			HelperNetID, HelperEntity, SenderReceiverSize, ConnectionDataSize), {} };
+
+	// Declares them all. Call first in OnPluginLoadHooks.
+	inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
+	{
+		return PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport);
+	}
+
+	// What each card can show: the parts it builds on must all be on.
+	inline bool ShowBuildings()        { return Buildings.On(); }
+	inline bool ShowItems()            { return Buildings.On() && Items.On(); }
+	inline bool ShowCrafters()         { return ShowItems() && Crafters.On(); }
+	inline bool ShowDroneRails()       { return ShowCrafters() && DroneRails.On(); }
+	inline bool ShowPackageTransport() { return ShowItems() && PackageTransport.On(); }
 }
