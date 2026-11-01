@@ -18,6 +18,18 @@ namespace Waila
 		float                 perMinMax = -1.0f;
 	};
 
+	// One building at an end of the rail's traffic: where an item comes from or
+	// goes to. Rates are items per minute, negative when not known or not a crafter.
+	struct RailPeerEntry
+	{
+		bool                  source = false;   // false: the item goes there
+		std::string           buildingName;
+		SDK::UAuItemDataBase* itemData = nullptr;
+		std::string           itemName;
+		float                 perMinNow = -1.0f;
+		float                 perMinMax = -1.0f;
+	};
+
 	struct RailInfo
 	{
 		std::string buildingName;
@@ -30,6 +42,14 @@ namespace Waila
 		int32_t sourceCount = 0;
 		bool    truncated   = false;   // the network or the source list hit a cap
 		std::vector<RailRateEntry> rates;
+
+		// From the game's own Mass data (rail_mass.h): the buildings the rail's
+		// items come from and go to, loaded or not. When false, `rates` holds the
+		// geometric guess instead.
+		bool                       fromMass = false;
+		int32_t                    destCount = 0;
+		std::vector<RailPeerEntry> peers;     // sources first
+		std::string                note;      // stands in when there is nothing to list
 
 		bool IsValid() const { return !buildingName.empty(); }
 	};

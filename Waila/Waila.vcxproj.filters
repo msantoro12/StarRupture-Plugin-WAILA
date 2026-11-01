@@ -60,6 +60,9 @@
     <ClInclude Include="rail_detector.h">
       <Filter>Handlers</Filter>
     </ClInclude>
+    <ClInclude Include="rail_mass.h">
+      <Filter>Handlers</Filter>
+    </ClInclude>
     <ClInclude Include="rail_network.h">
       <Filter>Handlers</Filter>
     </ClInclude>
@@ -126,6 +129,9 @@
       <Filter>Handlers</Filter>
     </ClCompile>
     <ClCompile Include="rail_detector.cpp">
+      <Filter>Handlers</Filter>
+    </ClCompile>
+    <ClCompile Include="rail_mass.cpp">
       <Filter>Handlers</Filter>
     </ClCompile>
     <ClCompile Include="cargo_sender_detector.cpp">

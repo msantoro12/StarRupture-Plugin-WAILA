@@ -12,6 +12,7 @@
 #include "BP_PackageSender_classes.hpp"
 #include "plugin_map.h"
 #include "plugin_helpers.h"
+#include "rail_mass.h"
 
 #include <string>
 #include <vector>
@@ -195,10 +196,13 @@ namespace Waila::Features
 			ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
 			HelperNetID, HelperEntity, SenderReceiverSize, ConnectionDataSize), {} };
 
-	// Declares them all. Call first in OnPluginLoadHooks.
+	// Declares them all. Call first in OnPluginLoadHooks. The rail sources
+	// feature (rail_mass.cpp) lists its own keys, which are many and live with
+	// the code that reads them.
 	inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
-		return PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport);
+		const bool listed = PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport);
+		return RailMass::Declare(self, scanner) && listed;
 	}
 
 	// What each card can show: the parts it builds on must all be on.
@@ -207,4 +211,8 @@ namespace Waila::Features
 	inline bool ShowCrafters()         { return ShowItems() && Crafters.On(); }
 	inline bool ShowDroneRails()       { return ShowCrafters() && DroneRails.On(); }
 	inline bool ShowPackageTransport() { return ShowItems() && PackageTransport.On(); }
+
+	// A drone rail's sources and destinations from the game's Mass data. A card
+	// that names a building and an item builds on Buildings and Items.
+	inline bool ShowRailSources()      { return ShowItems() && RailMass::Available(); }
 }

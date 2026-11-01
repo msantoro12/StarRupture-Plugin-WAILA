@@ -307,12 +307,63 @@ namespace Waila::UI
 		}
 	}
 
+	namespace
+	{
+		// The rail's sources, then where its items go. A crafter shows its rate
+		// for the item; storage and stations have none, so those columns stay blank.
+		void FromRailPeers(const Waila::RailInfo& info, CardModel& out)
+		{
+			for (size_t i = 0; i < info.peers.size() && i < kMaxRateRows; ++i)
+			{
+				const Waila::RailPeerEntry& p = info.peers[i];
+
+				RateRow row;
+				row.icon = Icons::ForItem(p.itemData);
+				row.name = (p.source ? "From " : "To ") + p.buildingName
+					+ (p.itemName.empty() ? std::string() : ": " + p.itemName);
+				if (p.perMinMax >= 0.0f)
+				{
+					row.now = PerMin(p.perMinNow);
+					row.max = PerMin(p.perMinMax);
+					if (p.perMinNow <= 0.0f)
+						row.tone = Health::Bad;
+					else if (p.perMinNow < p.perMinMax * 0.999f)
+						row.tone = Health::Warn;
+				}
+				out.rates.push_back(std::move(row));
+			}
+
+			if (out.rates.empty())
+				out.ratesNote = info.note.empty() ? "No cargo moving" : info.note;
+
+			char buf[48];
+			if (!info.peers.empty())
+			{
+				snprintf(buf, sizeof(buf), "%d from, %d to", info.sourceCount, info.destCount);
+				out.statusText = buf;
+			}
+
+			out.footLeft = "items / min: now, max";
+			if (info.peers.size() > kMaxRateRows)
+			{
+				snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(info.peers.size() - kMaxRateRows));
+				out.footRight = buf;
+			}
+		}
+	}
+
 	void Card::FromRail(const Waila::RailInfo& info, CardModel& out)
 	{
 		BeginCard(out, Accent::Cargo, info.buildingName, info.buildingDesc, info.buildingData);
 
 		out.hasRates = true;
 		out.chip     = info.filterName;
+
+		if (info.fromMass)
+		{
+			FromRailPeers(info, out);
+			return;
+		}
 
 		for (size_t i = 0; i < info.rates.size() && i < kMaxRateRows; ++i)
 		{

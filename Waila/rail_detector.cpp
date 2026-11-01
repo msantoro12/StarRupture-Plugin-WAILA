@@ -1,5 +1,6 @@
 #include "rail_detector.h"
 #include "rail_network.h"
+#include "rail_mass.h"
 #include "plugin_helpers.h"
 #include "waila_functions.h"
 #include "waila_fields.h"
@@ -61,6 +62,21 @@ namespace Waila
 
 		Cache g_cache;
 
+		// Items per minute of one recipe at a crafting speed: output count /
+		// BuildTime x speed x 60. countOverride (when above 0) replaces the
+		// recipe's own output count.
+		bool RecipeRate(UAuItemRecipeData* recipe, int32_t countOverride, float speed, float& outFull)
+		{
+			const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(recipe);
+			const int32_t count = countOverride > 0 ? countOverride : (recipeOutput ? recipeOutput->Count : 0);
+			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
+			if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
+				return false;
+
+			outFull = static_cast<float>(count) / buildTime * speed * 60.0f;
+			return true;
+		}
+
 		// Items per minute of one crafter, from the recipe it is working on, or for
 		// an idle crafter the recipe it is set to.
 		// full = output count / BuildTime x CraftingSpeed x 60.
@@ -94,20 +110,12 @@ namespace Waila
 			if (!recipe)
 				return false;
 			outItem = recipe->GetItemDataBase();
-
-			const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(recipe);
-			const int32_t count = queued && first->OutputItem.Count > 0 ? first->OutputItem.Count : (recipeOutput ? recipeOutput->Count : 0);
-			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
-			if (!outItem || count <= 0 || buildTime <= 0.0f)
+			if (!outItem)
 				return false;
 
 			const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter);
 			const float speed = frag ? frag->CraftingSpeed : (settings ? settings->CraftingSpeed : 0.0f);
-			if (!(speed > 0.0f) || !std::isfinite(speed))
-				return false;
-
-			outFull = static_cast<float>(count) / buildTime * speed * 60.0f;
-			return true;
+			return RecipeRate(recipe, queued ? first->OutputItem.Count : 0, speed, outFull);
 		}
 
 		// Whether the crafter is producing right now: the game's own building state
@@ -283,6 +291,128 @@ namespace Waila
 					t.nowKnown = false;
 			}
 		}
+
+		// ---- From the game's Mass data (rail_mass.h) ---------------------------
+
+		// More than this many distinct buildings stops being a glance.
+		constexpr size_t kMaxPeers = 32;
+
+		// One building and one item, seen at an end of the rail's traffic. Kept
+		// between refreshes while the player keeps aiming at the rail, so a rail
+		// whose drones come and go still lists everything seen on it. Item data
+		// is a weak pointer, resolved on use.
+		struct MassPeer
+		{
+			RailMass::Entity entity = 0;
+			bool             source = false;
+			FWeakObjectPtr   item;
+			std::string      itemUnique;
+			std::string      itemDisplay;
+			std::string      buildingName;   // empty until the building is loaded once
+			float            perMinNow = -1.0f;
+			float            perMinMax = -1.0f;
+		};
+
+		struct MassCache
+		{
+			const AActor*                         rail = nullptr;
+			std::chrono::steady_clock::time_point stamp{};
+			bool                                  railFound = false;
+			int32_t                               drones    = 0;
+			std::vector<MassPeer>                 peers;
+		};
+
+		MassCache g_massCache;
+
+		// The name of every loaded building by its Mass entity.
+		std::unordered_map<RailMass::Entity, std::string> LoadedBuildingNames(UWorld* world)
+		{
+			std::unordered_map<RailMass::Entity, std::string> names;
+			TArray<AActor*> all{};
+			UGameplayStatics::GetAllActorsOfClass(world, ACrDroneSupplySystemBuildingBase::StaticClass(), &all);
+			for (int32_t i = 0; i < all.Num(); ++i)
+			{
+				AActor* building = all[i];
+				const RailMass::Entity entity = RailMass::EntityOf(building);
+				if (!entity)
+					continue;
+				std::string name, desc;
+				if (Fields::ReadBuildingTexts(Fields::BuildingDataOf(static_cast<ACrBuildingActorBase*>(building)), name, desc))
+					names.emplace(entity, std::move(name));
+			}
+			return names;
+		}
+
+		// A crafter's rate for the item the rail moves: only when it makes that item.
+		void RateOf(MassPeer& peer)
+		{
+			peer.perMinNow = peer.perMinMax = -1.0f;
+			RailMass::CrafterState crafter;
+			if (!Features::Crafters.On() || !RailMass::ReadCrafter(peer.entity, crafter) || !crafter.recipe)
+				return;
+
+			UAuItemDataBase* made = crafter.recipe->GetItemDataBase();
+			float full = 0.0f;
+			if (!made || Fields::UniqueNameOf(made) != peer.itemUnique
+				|| !RecipeRate(crafter.recipe, 0, crafter.speed, full))
+				return;
+			peer.perMinMax = full;
+			peer.perMinNow = crafter.stalled ? 0.0f : full;
+		}
+
+		void Merge(MassCache& cache, const RailMass::Observation& seen)
+		{
+			for (const RailMass::Peer& p : seen.peers)
+			{
+				const std::string unique = p.item ? Fields::UniqueNameOf(p.item) : std::string();
+				const auto same = std::find_if(cache.peers.begin(), cache.peers.end(), [&](const MassPeer& m)
+					{ return m.entity == p.entity && m.source == p.source && m.itemUnique == unique; });
+				if (same != cache.peers.end() || cache.peers.size() >= kMaxPeers)
+					continue;
+
+				MassPeer peer;
+				peer.entity = p.entity;
+				peer.source = p.source;
+				if (p.item)
+				{
+					peer.item.ObjectIndex        = p.item->Index;
+					peer.item.ObjectSerialNumber = 0;
+					peer.itemUnique  = unique;
+					peer.itemDisplay = Fields::DisplayNameOf(p.item);
+				}
+				cache.peers.push_back(std::move(peer));
+			}
+		}
+
+		void RefreshMass(AActor* rail, UWorld* world, MassCache& cache)
+		{
+			RailMass::Observation seen;
+			const RailMass::Entity entity = RailMass::EntityOf(rail);
+			if (entity && RailMass::Observe(entity, seen))
+			{
+				cache.railFound = seen.railFound;
+				cache.drones    = seen.drones;
+				Merge(cache, seen);
+			}
+
+			std::unordered_map<RailMass::Entity, std::string> names;
+			bool namesRead = false;
+			for (MassPeer& peer : cache.peers)
+			{
+				if (peer.buildingName.empty())
+				{
+					if (!namesRead)
+					{
+						names = LoadedBuildingNames(world);
+						namesRead = true;
+					}
+					const auto found = names.find(peer.entity);
+					if (found != names.end())
+						peer.buildingName = found->second;
+				}
+				RateOf(peer);
+			}
+		}
 	}
 
 	bool RailDetector::IsRail(AActor* actor)
@@ -321,6 +451,53 @@ namespace Waila
 		// pooling an address can come back as a different rail, which shows the old
 		// rail's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
+
+		if (Features::ShowRailSources())
+		{
+			if (g_massCache.rail != actor || now - g_massCache.stamp >= kRefresh)
+			{
+				UWorld* world = PluginSdkRuntime::GetWorld();
+				if (!world)
+					return true;
+
+				if (g_massCache.rail != actor)
+					g_massCache = MassCache{};
+				g_massCache.rail  = actor;
+				g_massCache.stamp = now;
+				RefreshMass(actor, world, g_massCache);
+			}
+
+			outInfo.fromMass = true;
+			for (const MassPeer& peer : g_massCache.peers)
+			{
+				// A filtered rail only carries that item.
+				if (!filterUnique.empty() && peer.itemUnique != filterUnique)
+					continue;
+
+				RailPeerEntry entry;
+				entry.source       = peer.source;
+				entry.buildingName = peer.buildingName.empty() ? "Out of range" : peer.buildingName;
+				entry.itemName     = peer.itemDisplay;
+				entry.perMinNow    = peer.perMinNow;
+				entry.perMinMax    = peer.perMinMax;
+
+				// A dead item just loses its icon.
+				UObject* obj = peer.item.Get();
+				if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
+					entry.itemData = static_cast<UAuItemDataBase*>(obj);
+
+				++(peer.source ? outInfo.sourceCount : outInfo.destCount);
+				outInfo.peers.push_back(std::move(entry));
+			}
+			// Sources first.
+			std::stable_partition(outInfo.peers.begin(), outInfo.peers.end(),
+				[](const RailPeerEntry& e) { return e.source; });
+
+			if (outInfo.peers.empty())
+				outInfo.note = g_massCache.railFound ? "No cargo moving" : "Rail data not available";
+			return true;
+		}
+
 		if (g_cache.rail != actor || now - g_cache.stamp >= kRefresh)
 		{
 			UWorld* world = PluginSdkRuntime::GetWorld();
@@ -382,5 +559,6 @@ namespace Waila
 	void RailDetector::Reset()
 	{
 		g_cache = Cache{};
+		g_massCache = MassCache{};
 	}
 }

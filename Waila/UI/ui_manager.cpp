@@ -334,7 +334,7 @@ namespace Waila::UI
 			}
 			else if (Waila::RailDetector::IsRail(hit.actor))
 			{
-				if (Waila::Features::ShowDroneRails())
+				if (Waila::Features::ShowRailSources() || Waila::Features::ShowDroneRails())
 					Waila::RailDetector::GetRailInfo(hit.actor, railInfo);
 			}
 		}

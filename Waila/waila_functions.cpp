@@ -45,6 +45,7 @@ namespace Waila::Functions
             LOG_WARN("WailaFunctions: GetStoredItemsContainerInternal unresolved");
 
         Fields::Resolve(self, scanner);
+        RailMass::Resolve(self, scanner);
     }
 
     FGetCraftingFragment GetCraftingFragment()
