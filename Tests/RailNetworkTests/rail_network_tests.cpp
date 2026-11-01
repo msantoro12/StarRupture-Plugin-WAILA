@@ -1,5 +1,6 @@
-// Console tests for Waila/rail_network.h: a few hand-built layouts, then the
-// rails around a captured supermagnet platform (fixtures\supermagnet-platform.txt).
+// Console tests for Waila/rail_network.h: a few hand-built layouts, the rails
+// around a captured supermagnet platform (fixtures\supermagnet-platform.txt),
+// then the one-row-per-item sums of a rail card.
 // Prints each failure and returns non-zero when any check fails.
 
 #include "rail_network.h"
@@ -352,6 +353,94 @@ namespace
 		for (long rail : { 303344L, 303513L, 304120L, 314858L })
 			Check(ids(f.rail.at(rail)).empty(), "rail " + std::to_string(rail) + " does not show the drill");
 	}
+
+	const ItemFlow* FlowOf(const std::vector<ItemFlow>& flows, const std::string& item)
+	{
+		for (const ItemFlow& f : flows)
+			if (f.item == item)
+				return &f;
+		return nullptr;
+	}
+
+	bool Near(float a, float b) { return std::fabs(a - b) < 0.001f; }
+
+	FlowPart Maker(uint64_t building, const std::string& item, float full)
+	{
+		return { building, item, true, true, full };
+	}
+
+	FlowPart Taker(uint64_t building, const std::string& item, float full, bool asking)
+	{
+		FlowPart part{ building, item, false, true, full };
+		part.requestsKnown = true;
+		part.requesting    = asking;
+		return part;
+	}
+
+	// Three fabricators make wolfram plate, one seen both through the layout and
+	// through the drones; a furnace makes chemicals. Five furnaces and a press
+	// take plates, two of them seen twice; two furnaces take chemicals. One row
+	// per item, each building counted once, the rates summed.
+	void TestFlowsOneRowPerItem()
+	{
+		const std::vector<FlowPart> parts = {
+			// The rail layout.
+			Maker(1, "Plate", 30), Maker(2, "Plate", 30), Maker(3, "Plate", 30),
+			Taker(10, "Plate", 10, true), Taker(11, "Plate", 10, false), Taker(12, "Plate", 10, true),
+			Taker(10, "Acid", 10, true),   // the furnace's other input, not on this rail
+			// The drones: fabricator 3 and furnaces 10 and 11 again, then more.
+			Maker(3, "Plate", 30), Taker(10, "Plate", 10, true), Taker(11, "Plate", 10, false),
+			Taker(13, "Plate", 10, false), Taker(14, "Plate", 10, true), Taker(15, "Plate", 20, true),
+			Maker(4, "Chemicals", 20),
+			Taker(10, "Chemicals", 5, true), Taker(16, "Chemicals", 5, false),
+		};
+
+		const std::vector<ItemFlow> flows = SumFlows(parts, 480.0f, true);
+		Check(flows.size() == 2, "one row per carried item (got " + std::to_string(flows.size()) + ")");
+		Check(!FlowOf(flows, "Acid"), "an item nothing on the rail supplies gets no row");
+
+		const ItemFlow* plate = FlowOf(flows, "Plate");
+		Check(plate && plate->sources == 3 && plate->consumers == 6, "plate: 3 sources, 6 consumers, duplicates counted once");
+		Check(plate && Near(plate->max, 90), "plate max: 3 x 30");
+		Check(plate && Near(plate->min, 20), "plate min: 90 - (5 x 10 + 20)");
+		Check(plate && Near(plate->now, 40), "plate now: 90 - (10 + 10 + 10 + 20) asked");
+
+		const ItemFlow* chem = FlowOf(flows, "Chemicals");
+		Check(chem && chem->sources == 1 && chem->consumers == 2, "chemicals: 1 source, 2 consumers");
+		Check(chem && Near(chem->max, 20) && Near(chem->min, 10) && Near(chem->now, 15), "chemicals: 20, 10, 15");
+		Check(flows.front().item == "Plate", "the biggest flow comes first");
+	}
+
+	// The rail caps the supply; nothing goes negative; an unread source or
+	// request leaves its figures unknown; storage supplies at the rail's rate.
+	void TestFlowsLimits()
+	{
+		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 600), Taker(2, "A", 900, true) }, 480.0f, true);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 0) && Near(flows[0].now, 0), "capped at the rail, floored at 0");
+
+		flows = SumFlows({ Maker(1, "A", 60), Maker(2, "A", -1) }, 480.0f, true);
+		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "an unread source makes the row unknown");
+
+		flows = SumFlows({ Maker(1, "A", 60) }, -1.0f, true);
+		Check(flows[0].max < 0 && Near(flows[0].min, 60), "no capacity: no max, min from the sources");
+
+		FlowPart unread = Taker(2, "A", 10, false);
+		unread.requestsKnown = false;
+		flows = SumFlows({ Maker(1, "A", 60), unread }, 480.0f, true);
+		Check(Near(flows[0].min, 50) && flows[0].now < 0, "an unread request leaves now unknown");
+
+		flows = SumFlows({ Maker(1, "A", 60), Taker(2, "A", 10, true) }, 480.0f, false);
+		Check(flows[0].now < 0, "requests off: no now");
+
+		const FlowPart stock{ 7, "A", true, false };
+		const FlowPart bin{ 8, "A", false, false };
+		flows = SumFlows({ stock, bin, Taker(2, "A", 30, true) }, 120.0f, true);
+		Check(flows[0].sources == 1 && flows[0].consumers == 2, "storage counts as a building at either end");
+		Check(Near(flows[0].max, 120) && Near(flows[0].min, 90), "storage alone supplies at the rail's rate");
+
+		flows = SumFlows({ stock, Maker(1, "A", 30) }, 120.0f, true);
+		Check(Near(flows[0].max, 30), "with a crafter source, the crafters set the supply");
+	}
 }
 
 int main()
@@ -368,6 +457,8 @@ int main()
 	TestJunctionInsideDrill();
 	TestLaneTracksStayApart();
 	TestPlatform(dir);
+	TestFlowsOneRowPerItem();
+	TestFlowsLimits();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");
