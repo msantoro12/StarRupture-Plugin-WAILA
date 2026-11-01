@@ -300,6 +300,7 @@
     <ClInclude Include="plugin.h" />
     <ClInclude Include="plugin_config.h" />
     <ClInclude Include="plugin_helpers.h" />
+    <ClInclude Include="waila_fields.h" />
     <ClInclude Include="waila_functions.h" />
     <ClInclude Include="Core\raycaster.h" />
     <ClInclude Include="crafter_detector.h" />

@@ -1,5 +1,6 @@
 #include "crafter_detector.h"
 #include "waila_functions.h"
+#include "waila_fields.h"
 #include "plugin_helpers.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
@@ -41,7 +42,7 @@ namespace Waila
 			entry.itemData  = ItemDefaultsOf(itemClass);
 
 			if (entry.itemData)
-				entry.displayName = UKismetTextLibrary::Conv_TextToString(entry.itemData->ItemName).ToString();
+				entry.displayName = Fields::DisplayNameOf(entry.itemData);
 		}
 
 		// Counts what is actually sitting in the crafter's input store, keyed by
@@ -51,18 +52,19 @@ namespace Waila
 		bool ReadInputStock(ACrBuildingActorBase* building,
 		                    std::unordered_map<std::string, int32_t>& outStock)
 		{
-			if (!building || !building->InItemStorage)
+			UCrBuildingItemStorageComponent* inStorage = Fields::ValueOr<UCrBuildingItemStorageComponent*>(Fields::InItemStorage, building, nullptr);
+			if (!inStorage)
 				return false;
 
 			auto fnGetContainer = Waila::Functions::GetStoredItemsContainerInternal();
 			if (!fnGetContainer)
 				return false;
 
-			UWorld* world = UWorld::GetWorld();
+			UWorld* world = PluginSdkRuntime::GetWorld();
 			if (!world)
 				return false;
 
-			FCrItemsStorageContainer* container = fnGetContainer(building->InItemStorage, world);
+			FCrItemsStorageContainer* container = fnGetContainer(inStorage, world);
 			if (!container)
 				return false;
 
@@ -74,7 +76,7 @@ namespace Waila
 				if (!slot.Item.ItemDataBase || !UKismetSystemLibrary::IsValid(slot.Item.ItemDataBase))
 					continue;
 
-				outStock[slot.Item.ItemDataBase->UniqueItemName.ToString()] += slot.Item.Count;
+				outStock[Fields::UniqueNameOf(slot.Item.ItemDataBase)] += slot.Item.Count;
 			}
 
 			return true;
@@ -102,24 +104,18 @@ namespace Waila
 
 		// Resolve localized building name from PlacementData if available
 		ACrBuildingActorBase* building = static_cast<ACrBuildingActorBase*>(actor);
-		UCrBuildingData* buildingData = (building->PlacementData && building->PlacementData->IsA(UCrBuildingData::StaticClass()))
-			? static_cast<UCrBuildingData*>(building->PlacementData)
-			: nullptr;
+		UCrBuildingData* buildingData = Fields::BuildingDataOf(building);
 
 		outInfo.buildingData = buildingData;
 
-		if (buildingData)
-		{
-			outInfo.crafterClass = SDK::UKismetTextLibrary::Conv_TextToString(buildingData->BuildingName).ToString();
-			outInfo.buildingDesc = SDK::UKismetTextLibrary::Conv_TextToString(buildingData->BuildingDescription).ToString();
-		}
-		else
+		if (!Fields::ReadBuildingTexts(buildingData, outInfo.crafterClass, outInfo.buildingDesc))
 		{
 			outInfo.crafterClass = actor->Class ? actor->Class->GetName() : "Unknown";
 			outInfo.buildingDesc = "N/A";
 		}
 
-		outInfo.craftingSpeed = crafter->CraftingSettings.CraftingSpeed;
+		if (const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter))
+			outInfo.craftingSpeed = settings->CraftingSpeed;
 
 		// Crafting progress (0.0 - 1.0)
 		outInfo.craftingProgress = crafter->GetItemCraftingProgress();
@@ -127,55 +123,59 @@ namespace Waila
 		// Recipe — read the first queued item from the CraftComponent
 		outInfo.currentRecipe = "(idle)";
 
-		UCrCraftingComponent* comp = crafter->CraftComponent;
+		UCrCraftingComponent* comp = Fields::ValueOr<UCrCraftingComponent*>(Fields::CraftComponent, crafter, nullptr);
 
 		if (comp)
 		{
-			const TArray<FAuCraftItem>& items = comp->ItemsToCraft;
+			const TArray<FAuCraftItem>* queue = Fields::ItemsToCraft.In(comp);
+			const FAuCraftItem* first = queue && queue->Num() > 0 ? &(*queue)[0] : nullptr;
 
-			if (items.Num() > 0 && items[0].RecipeData)
+			if (first && first->RecipeData)
 			{
-				outInfo.recipeBuildTime = items[0].RecipeData->BuildTime;
-				outInfo.recipeOutputCount = items[0].OutputItem.Count > 0 ? items[0].OutputItem.Count : items[0].RecipeData->OutputItem.Count;
-				UAuItemDataBase* itemData = items[0].RecipeData->GetItemDataBase();
+				outInfo.recipeBuildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, first->RecipeData);
+				const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(first->RecipeData);
+				outInfo.recipeOutputCount = first->OutputItem.Count > 0 ? first->OutputItem.Count : (recipeOutput ? recipeOutput->Count : 0);
+				UAuItemDataBase* itemData = first->RecipeData->GetItemDataBase();
 				if (itemData)
 				{
-					outInfo.currentRecipe = itemData->UniqueItemName.ToString();
-					outInfo.currentRecipeDisplayName = SDK::UKismetTextLibrary::Conv_TextToString(itemData->ItemName).ToString();
+					outInfo.currentRecipe = Fields::UniqueNameOf(itemData);
+					outInfo.currentRecipeDisplayName = Fields::DisplayNameOf(itemData);
 				}
 
 				// Store typed recipe pointer for the output icon (UCrItemRecipeData extends UAuItemRecipeData)
-				if (items[0].RecipeData->IsA(UCrItemRecipeData::StaticClass()))
-					outInfo.recipeDataPtr = static_cast<UCrItemRecipeData*>(items[0].RecipeData);
+				if (first->RecipeData->IsA(UCrItemRecipeData::StaticClass()))
+					outInfo.recipeDataPtr = static_cast<UCrItemRecipeData*>(first->RecipeData);
 
 				// Recipe inputs and output. The have-counts come from the crafter's
 				// own input store, so a starved machine can be spotted without
 				// opening it.
-				UAuItemRecipeData* recipe = items[0].RecipeData;
+				UAuItemRecipeData* recipe = first->RecipeData;
 
 				std::unordered_map<std::string, int32_t> stock;
 				const bool stockKnown = ReadInputStock(building, stock);
 
-				const TArray<FAuItemRecipeOrder>& needed = recipe->NeededResources;
-				outInfo.recipeInputs.reserve(static_cast<size_t>(needed.Num()));
+				const TArray<FAuItemRecipeOrder>* neededAt = Fields::NeededResources.In(recipe);
+				const int32 neededCount = neededAt ? neededAt->Num() : 0;
+				outInfo.recipeInputs.reserve(static_cast<size_t>(neededCount));
 
-				for (int i = 0; i < needed.Num(); ++i)
+				for (int i = 0; i < neededCount; ++i)
 				{
+					const FAuItemRecipeOrder& order = (*neededAt)[i];
 					RecipeItemEntry entry;
-					FillEntry(entry, needed[i].Item, needed[i].Count);
+					FillEntry(entry, order.Item, order.Count);
 					if (!entry.IsValid())
 						continue;
 
 					if (stockKnown && entry.itemData)
 					{
-						auto it = stock.find(entry.itemData->UniqueItemName.ToString());
+						auto it = stock.find(Fields::UniqueNameOf(entry.itemData));
 						entry.have = it != stock.end() ? it->second : 0;
 					}
 
 					outInfo.recipeInputs.push_back(std::move(entry));
 				}
 
-				FillEntry(outInfo.recipeOutput, recipe->OutputItem.Item, outInfo.recipeOutputCount);
+				FillEntry(outInfo.recipeOutput, recipeOutput ? recipeOutput->Item : nullptr, outInfo.recipeOutputCount);
 			}
 
 			// pattern: UCrCraftingComponent::GetCraftingFragment

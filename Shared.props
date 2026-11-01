@@ -60,4 +60,26 @@
     </ClCompile>
   </ItemDefinitionGroup>
 
+  <!-- ============================================================
+       PLUGIN_GAME_BUILT_CL
+       The game build (CL) the Game-SDK was generated from, read from
+       the build_cl.txt beside its Client\ or Server\ SDK, and stored
+       in PluginInfo::gameBuiltCL by plugin_interface.h. No file: no
+       define, and the plugin declares build 0.
+       ============================================================ -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
+    <StarRuptureBuildCLFile>$(GameSDKRoot)\Client\build_cl.txt</StarRuptureBuildCLFile>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
+    <StarRuptureBuildCLFile>$(GameSDKRoot)\Server\build_cl.txt</StarRuptureBuildCLFile>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(StarRuptureBuildCLFile)' != '' And Exists('$(StarRuptureBuildCLFile)')">
+    <StarRuptureGameBuiltCL>$([System.IO.File]::ReadAllText('$(StarRuptureBuildCLFile)').Trim())</StarRuptureGameBuiltCL>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(StarRuptureGameBuiltCL)' != ''">
+    <ClCompile>
+      <PreprocessorDefinitions>PLUGIN_GAME_BUILT_CL=$(StarRuptureGameBuiltCL)u;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
 </Project>

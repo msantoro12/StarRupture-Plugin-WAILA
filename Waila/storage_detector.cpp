@@ -1,6 +1,7 @@
 #include "storage_detector.h"
 #include <unordered_map>
 #include "waila_functions.h"
+#include "waila_fields.h"
 #include "plugin_helpers.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
@@ -26,18 +27,11 @@ namespace Waila
 		ACrBuildingActorBase* building = static_cast<ACrBuildingActorBase*>(actor);
 
 		// Building name and description from PlacementData
-		UCrBuildingData* buildingData = (building->PlacementData && building->PlacementData->IsA(UCrBuildingData::StaticClass()))
-			? static_cast<UCrBuildingData*>(building->PlacementData)
-			: nullptr;
+		UCrBuildingData* buildingData = Fields::BuildingDataOf(building);
 
 		outInfo.buildingData = buildingData;
 
-		if (buildingData)
-		{
-			outInfo.buildingName = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingName).ToString();
-			outInfo.buildingDesc = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingDescription).ToString();
-		}
-		else
+		if (!Fields::ReadBuildingTexts(buildingData, outInfo.buildingName, outInfo.buildingDesc))
 		{
 			outInfo.buildingName = actor->Class ? actor->Class->GetName() : "Storage";
 			outInfo.buildingDesc = "";
@@ -57,10 +51,10 @@ namespace Waila
 				auto fnGetContainer = Waila::Functions::GetStoredItemsContainerInternal();
 				if (fnGetContainer)
 				{
-					SDK::UWorld* world = SDK::UWorld::GetWorld();
+					SDK::UWorld* world = PluginSdkRuntime::GetWorld();
 					if (!world)
 					{
-						LOG_WARN("StorageDetector: UWorld::GetWorld() returned null, skipping storage query");
+						LOG_WARN("StorageDetector: GetWorld() returned null, skipping storage query");
 						return false;
 					}
 					FCrItemsStorageContainer* container = fnGetContainer(itemStorage, world);
@@ -86,8 +80,8 @@ namespace Waila
 							if (slot.Item.ItemDataBase && UKismetSystemLibrary::IsValid(slot.Item.ItemDataBase))
 							{
 								itemData    = slot.Item.ItemDataBase;
-								uniqueName  = itemData->UniqueItemName.ToString();
-								displayName = UKismetTextLibrary::Conv_TextToString(itemData->ItemName).ToString();
+								uniqueName  = Fields::UniqueNameOf(itemData);
+								displayName = Fields::DisplayNameOf(itemData);
 							}
 
 							auto it = itemIndexMap.find(uniqueName);
@@ -116,11 +110,11 @@ namespace Waila
 		// used/total would be a ratio of two different grids.
 		UCrBuildingItemStorageComponent* capacitySource =
 			mainStorage ? static_cast<UCrBuildingItemStorageComponent*>(mainStorage)
-			            : building->ItemStorage;
+			            : Fields::ValueOr<UCrBuildingItemStorageComponent*>(Fields::ItemStorage, building, nullptr);
 
 		if (capacitySource)
 		{
-			outInfo.maxCapacity = capacitySource->GridColumns * capacitySource->GridRows;
+			outInfo.maxCapacity = Fields::ValueOr<int32>(Fields::GridColumns, capacitySource) * Fields::ValueOr<int32>(Fields::GridRows, capacitySource);
 		}
 
 		return true;

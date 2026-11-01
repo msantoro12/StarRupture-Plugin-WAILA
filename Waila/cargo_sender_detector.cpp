@@ -1,5 +1,6 @@
 #include "cargo_sender_detector.h"
 #include "waila_functions.h"
+#include "waila_fields.h"
 #include "plugin_helpers.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
@@ -8,16 +9,6 @@
 #include "Engine_classes.hpp"
 
 using namespace SDK;
-
-// Raw offsets derived from native analysis — not exported by SDK headers
-static constexpr ptrdiff_t OFFSET_SENDING_TIME         = 0x2C0; // float on ACrPackageTransportReplicator
-static constexpr ptrdiff_t OFFSET_ALL_SENDER_RECV_DATA = 0x490; // TArray<FCrSenderReceiverData> (SenderReceiversContainer+0x108)
-static constexpr ptrdiff_t OFFSET_CONNECTIONS_DATA     = 0x5B0; // TArray raw (ConnectionsContainer+0x108), 112-byte entries
-static constexpr ptrdiff_t CONN_ENTRY_NETID_DWORD0     = 16;    // DWORD matching NetID bytes 0-3
-static constexpr ptrdiff_t CONN_ENTRY_NETID_DWORD2     = 24;    // DWORD matching NetID bytes 8-11
-static constexpr ptrdiff_t CONN_ENTRY_ITEM             = 88;    // UCrItemDataBase* pointer
-static constexpr ptrdiff_t CONN_ENTRY_START_SEND_TIME  = 100;   // float: GetStartSendServerTime result
-static constexpr int32_t   CONN_ENTRY_STRIDE           = 112;
 
 namespace Waila
 {
@@ -36,18 +27,11 @@ namespace Waila
 
 		ACrBuildingActorBase* building = static_cast<ACrBuildingActorBase*>(actor);
 
-		UCrBuildingData* buildingData = (building->PlacementData && building->PlacementData->IsA(UCrBuildingData::StaticClass()))
-			? static_cast<UCrBuildingData*>(building->PlacementData)
-			: nullptr;
+		UCrBuildingData* buildingData = Fields::BuildingDataOf(building);
 
 		outInfo.buildingData = buildingData;
 
-		if (buildingData)
-		{
-			outInfo.buildingName = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingName).ToString();
-			outInfo.buildingDesc = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingDescription).ToString();
-		}
-		else
+		if (!Fields::ReadBuildingTexts(buildingData, outInfo.buildingName, outInfo.buildingDesc))
 		{
 			outInfo.buildingName = actor->Class ? actor->Class->GetName() : "Package Sender";
 			outInfo.buildingDesc = "";
@@ -55,13 +39,16 @@ namespace Waila
 
 		// CanSend from blueprint class
 		if (actor->IsA(ABP_PackageSender_C::StaticClass()))
-			outInfo.canSend = static_cast<ABP_PackageSender_C*>(actor)->CanSend;
+		{
+			if (const bool* canSend = Fields::SenderCanSend.In(Fields::ObjectProperties(), static_cast<ABP_PackageSender_C*>(actor)))
+				outInfo.canSend = *canSend;
+		}
 
 		// Get ACrPackageTransportReplicator via GameState
-		UWorld* world = UWorld::GetWorld();
+		UWorld* world = PluginSdkRuntime::GetWorld();
 		if (!world)
 		{
-			LOG_WARN("CargoSenderDetector: UWorld::GetWorld() returned null");
+			LOG_WARN("CargoSenderDetector: GetWorld() returned null");
 			return true;
 		}
 
@@ -70,15 +57,19 @@ namespace Waila
 			return true;
 
 		ACrGameStateBase* gameState = static_cast<ACrGameStateBase*>(gameStateBase);
-		ACrPackageTransportReplicator* replicator = gameState->PackageTransportReplicator;
+		ACrPackageTransportReplicator* replicator = Fields::ValueOr<ACrPackageTransportReplicator*>(Fields::PackageTransportReplicator, gameState, nullptr);
 		if (!replicator || !UKismetSystemLibrary::IsValid(replicator))
 			return true;	
 
-		// SendingTime — raw offset, not exported by SDK
-		outInfo.sendingTime = *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(replicator) + OFFSET_SENDING_TIME);
+		// The two TArrays live in containers inside the replicator: the member of the
+		// replicator, then the member of its container's type.
+		outInfo.sendingTime = Fields::ValueOr<float>(Fields::SendingTime, replicator);
 
-		// AllSenderReceiversData — private, accessed via raw offset
-		auto& allData = *reinterpret_cast<TArray<FCrSenderReceiverData>*>(reinterpret_cast<uint8_t*>(replicator) + OFFSET_ALL_SENDER_RECV_DATA);
+		const auto* senderContainer = Fields::SenderReceiversContainer.In(replicator);
+		const auto* allDataAt = Fields::AllSenderReceiversData.In(senderContainer);
+		if (!allDataAt)
+			return true;
+		const TArray<FCrSenderReceiverData>& allData = *allDataAt;
 
 		// Match by world-space proximity: find the sender entry closest to this building
 		FVector actorLoc = actor->K2_GetActorLocation();
@@ -108,41 +99,53 @@ namespace Waila
 			if (bestMatch->ItemType && UKismetSystemLibrary::IsValid(bestMatch->ItemType))
 			{
 				outInfo.sendingItem     = bestMatch->ItemType;
-				outInfo.sendingItemName = UKismetTextLibrary::Conv_TextToString(bestMatch->ItemType->ItemName).ToString();
+				outInfo.sendingItemName = Fields::DisplayNameOf(bestMatch->ItemType);
 			}
 			// Replicate GetSenderItem + GetStartSendServerTime inline in one pass.
-			// Both scan ConnectionsContainer.ConnectionsData (112-byte entries) by the same
-			// NetID match (DWORD0 at +16, DWORD2 at +24). Item at +88, start time at +100.
+			// Both scan ConnectionsContainer.ConnectionsData by the same sender match: the
+			// helper's NetID and the first dword of its Entity. Item and start time are
+			// members of the connection entry.
 			{
-				struct RawTArray { void* Data; int32_t Num; int32_t Max; };
-				auto& connArray = *reinterpret_cast<RawTArray*>(reinterpret_cast<uint8_t*>(replicator) + OFFSET_CONNECTIONS_DATA);
-				uint8_t* connData = reinterpret_cast<uint8_t*>(connArray.Data);
+				const auto* connContainer = Fields::ConnectionsContainer.In(replicator);
+				const TArray<FCrPackageTransportConnectionData>* connArray = Fields::ConnectionsData.In(connContainer);
 
-				// Extract DWORD0 and DWORD2 from the sender's 16-byte NetID.
-				// FCrMassEntityReplicationHelper starts with FCrMassEntityNetID (16 bytes).
-				const uint8_t* netIdBytes = reinterpret_cast<const uint8_t*>(&bestMatch->Entity);
-				uint32_t netIdDword0 = *reinterpret_cast<const uint32_t*>(netIdBytes + 0);
-				uint32_t netIdDword2 = *reinterpret_cast<const uint32_t*>(netIdBytes + 8);
+				// The sender's NetID and Entity dwords, to match against each connection's sender.
+				const uint8_t* helper = reinterpret_cast<const uint8_t*>(&bestMatch->Entity);
+				const PluginFieldSpec& netIdField = Fields::HelperNetID;
+				const PluginFieldSpec& entityField = Fields::HelperEntity;
+				// Both dwords are read at a resolved offset inside the helper struct, whose
+				// size is checked against the running build.
+				constexpr int32_t kDword = sizeof(uint32_t);
+				if (!connArray || netIdField.offset < 0 || entityField.offset < 0 ||
+					netIdField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)) ||
+					entityField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)))
+					return true;
+				uint32_t netIdDword0 = *reinterpret_cast<const uint32_t*>(helper + netIdField.offset);
+				uint32_t netIdDword2 = *reinterpret_cast<const uint32_t*>(helper + entityField.offset);
 
-				for (int32_t i = 0; connData && i < connArray.Num; ++i)
+				for (int32_t i = 0; i < connArray->Num(); ++i)
 				{
-					uint8_t* entry = connData + CONN_ENTRY_STRIDE * i;
-					uint32_t d16 = *reinterpret_cast<uint32_t*>(entry + CONN_ENTRY_NETID_DWORD0);
-					uint32_t d24 = *reinterpret_cast<uint32_t*>(entry + CONN_ENTRY_NETID_DWORD2);
+					const FCrPackageTransportConnectionData& entry = (*connArray)[i];
+					const auto* sender = Fields::ConnectionSender.In(&entry);
+					if (!sender)
+						break;
+					const uint8_t* senderBytes = reinterpret_cast<const uint8_t*>(sender);
+					uint32_t d16 = *reinterpret_cast<const uint32_t*>(senderBytes + netIdField.offset);
+					uint32_t d24 = *reinterpret_cast<const uint32_t*>(senderBytes + entityField.offset);
 
 					bool matched = (d16 != 0 && d16 == netIdDword0) ||
 					               (d24 != 0xFFFFFFFFu && d24 == netIdDword2);
 					if (!matched)
 						continue;
 
-					UCrItemDataBase* connItem = *reinterpret_cast<UCrItemDataBase**>(entry + CONN_ENTRY_ITEM);
+					UCrItemDataBase* connItem = Fields::ValueOr<UCrItemDataBase*>(Fields::ConnectionItem, &entry, nullptr);
 					if (connItem && UKismetSystemLibrary::IsValid(connItem))
 					{
 						outInfo.sendingItem     = connItem;
-						outInfo.sendingItemName = UKismetTextLibrary::Conv_TextToString(connItem->ItemName).ToString();
+						outInfo.sendingItemName = Fields::DisplayNameOf(connItem);
 					}
 
-					float startSendTime = *reinterpret_cast<float*>(entry + CONN_ENTRY_START_SEND_TIME);
+					float startSendTime = Fields::ValueOr<float>(Fields::ConnectionStartSendTime, &entry);
 					if (startSendTime > 0.f && outInfo.sendingTime > 0.f)
 					{
 						double serverTime = gameStateBase->GetServerWorldTimeSeconds();
