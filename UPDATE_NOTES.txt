@@ -5,4 +5,4 @@ A lane's tracks stay apart even before the lane has loaded. Buildings that have 
 A rail passing through a drill's frame no longer shows the drill
 Idle crafters count with the recipe they are set to
 The card follows the camera, so it works from the building drone; Max Distance counts from the drone
-A rail card lists where its items come from and go to, including machines, storage and stations out of render range
+A rail card lists where its items come from and go to under its item rates, including machines, storage and stations out of render range
