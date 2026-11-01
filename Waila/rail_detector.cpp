@@ -2,6 +2,7 @@
 #include "rail_network.h"
 #include "plugin_helpers.h"
 #include "waila_functions.h"
+#include "waila_fields.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
 #include "AuCrafting_classes.hpp"
@@ -72,7 +73,7 @@ namespace Waila
 		{
 			outItem = nullptr;
 
-			UCrCraftingComponent* comp = crafter->CraftComponent;
+			UCrCraftingComponent* comp = Fields::ValueOr<UCrCraftingComponent*>(Fields::CraftComponent, crafter, nullptr);
 			if (!comp)
 				return false;
 
@@ -83,25 +84,29 @@ namespace Waila
 			// ItemsToCraft is empty while a crafter waits for input (seen on every
 			// crafter just after a save loads); the fragment still holds the recipe
 			// the player picked (INFERRED).
-			const TArray<FAuCraftItem>& items = comp->ItemsToCraft;
-			const bool queued = items.Num() > 0 && items[0].RecipeData;
+			const TArray<FAuCraftItem>* queue = Fields::ItemsToCraft.In(comp);
+			const FAuCraftItem* first = queue && queue->Num() > 0 ? &(*queue)[0] : nullptr;
+			const bool queued = first && first->RecipeData;
 
-			UAuItemRecipeData* recipe = queued ? items[0].RecipeData
+			UAuItemRecipeData* recipe = queued ? first->RecipeData
 									: frag     ? static_cast<UAuItemRecipeData*>(frag->SelectedRecipe)
 												: nullptr;
 			if (!recipe)
 				return false;
 			outItem = recipe->GetItemDataBase();
 
-			const int32_t count = queued && items[0].OutputItem.Count > 0 ? items[0].OutputItem.Count : recipe->OutputItem.Count;
-			if (!outItem || count <= 0 || recipe->BuildTime <= 0.0f)
+			const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(recipe);
+			const int32_t count = queued && first->OutputItem.Count > 0 ? first->OutputItem.Count : (recipeOutput ? recipeOutput->Count : 0);
+			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
+			if (!outItem || count <= 0 || buildTime <= 0.0f)
 				return false;
 
-			const float speed = frag ? frag->CraftingSpeed : crafter->CraftingSettings.CraftingSpeed;
+			const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter);
+			const float speed = frag ? frag->CraftingSpeed : (settings ? settings->CraftingSpeed : 0.0f);
 			if (!(speed > 0.0f) || !std::isfinite(speed))
 				return false;
 
-			outFull = static_cast<float>(count) / recipe->BuildTime * speed * 60.0f;
+			outFull = static_cast<float>(count) / buildTime * speed * 60.0f;
 			return true;
 		}
 
@@ -176,11 +181,12 @@ namespace Waila
 					continue;
 
 				named.clear();
-				const TArray<FBuildingSocketData>& sockets = point->SocketsData;
-				for (int32_t s = 0; s < sockets.Num(); ++s)
+				const TArray<FBuildingSocketData>* sockets = Fields::SocketsData.In(point);
+				for (int32_t s = 0; sockets && s < sockets->Num(); ++s)
 				{
-					if (sockets[s].Socket)
-						named.push_back({ sockets[s].Socket->SocketName.ToString(), ToVec(sockets[s].WorldTransform.Translation) });
+					const FBuildingSocketData& socket = (*sockets)[s];
+					if (socket.Socket)
+						named.push_back({ socket.Socket->SocketName.ToString(), ToVec(socket.WorldTransform.Translation) });
 				}
 				scene.AddPathPoint(named);
 			}
@@ -190,7 +196,7 @@ namespace Waila
 		// spline is missing.
 		bool RailEnds(ACrDronePathPointConnection* rail, RailNetwork::Rail& out)
 		{
-			USplineComponent* spline = rail->Spline;
+			USplineComponent* spline = Fields::ValueOr<USplineComponent*>(Fields::Spline, rail, nullptr);
 			if (!spline || !UKismetSystemLibrary::IsValid(spline))
 				return false;
 
@@ -243,7 +249,7 @@ namespace Waila
 				if (!item)
 					continue;
 
-				const std::string key = item->UniqueItemName.ToString();
+				const std::string key = Fields::UniqueNameOf(item);
 				++out.sourceCount;
 
 				auto found = index.find(key);
@@ -254,7 +260,7 @@ namespace Waila
 					t.item.ObjectIndex        = item->Index;
 					t.item.ObjectSerialNumber = 0;
 					t.uniqueName  = key;
-					t.displayName = UKismetTextLibrary::Conv_TextToString(item->ItemName).ToString();
+					t.displayName = Fields::DisplayNameOf(item);
 					out.tallies.push_back(std::move(t));
 				}
 				Tally& t = out.tallies[found->second];
@@ -294,17 +300,10 @@ namespace Waila
 
 		ACrDronePathPointConnection* rail = static_cast<ACrDronePathPointConnection*>(actor);
 
-		UCrBuildingData* buildingData = (rail->PlacementData && rail->PlacementData->IsA(UCrBuildingData::StaticClass()))
-			? static_cast<UCrBuildingData*>(rail->PlacementData)
-			: nullptr;
+		UCrBuildingData* buildingData = Fields::BuildingDataOf(rail);
 
 		outInfo.buildingData = buildingData;
-		if (buildingData)
-		{
-			outInfo.buildingName = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingName).ToString();
-			outInfo.buildingDesc = UKismetTextLibrary::Conv_TextToString(buildingData->BuildingDescription).ToString();
-		}
-		else
+		if (!Fields::ReadBuildingTexts(buildingData, outInfo.buildingName, outInfo.buildingDesc))
 		{
 			outInfo.buildingName = actor->Class ? actor->Class->GetName() : "Drone Rail";
 		}
@@ -314,8 +313,8 @@ namespace Waila
 		std::string filterUnique;
 		if (filter && UKismetSystemLibrary::IsValid(filter))
 		{
-			outInfo.filterName = UKismetTextLibrary::Conv_TextToString(filter->ItemName).ToString();
-			filterUnique       = filter->UniqueItemName.ToString();
+			outInfo.filterName = Fields::DisplayNameOf(filter);
+			filterUnique       = Fields::UniqueNameOf(filter);
 		}
 
 		// Rails are only compared by address here, never dereferenced. With actor
@@ -324,7 +323,7 @@ namespace Waila
 		const auto now = std::chrono::steady_clock::now();
 		if (g_cache.rail != actor || now - g_cache.stamp >= kRefresh)
 		{
-			UWorld* world = UWorld::GetWorld();
+			UWorld* world = PluginSdkRuntime::GetWorld();
 			if (!world)
 				return true;
 

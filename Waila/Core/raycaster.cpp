@@ -1,8 +1,10 @@
+#include "plugin_interface.h"
 #include "raycaster.h"
 #include "plugin_helpers.h"
 #include "Engine_classes.hpp"
 #include "Engine_structs.hpp"
 #include "CoreUObject_structs.hpp"
+#include "plugin_map.h"
 
 using namespace SDK;
 
@@ -10,7 +12,7 @@ namespace Waila::Core
 {
 	APawn* WailaRaycastSystem::GetLocalPlayer() const
 	{
-		UWorld* world = UWorld::GetWorld();
+		UWorld* world = PluginSdkRuntime::GetWorld();
 		if (!world || !UKismetSystemLibrary::IsValid(world) || !world->GameState)
 			return nullptr;
 
@@ -75,7 +77,7 @@ namespace Waila::Core
 		outHit = {};
 
 		// Obtain world and pawn once — both can become null during a map transition
-		UWorld* world = UWorld::GetWorld();
+		UWorld* world = PluginSdkRuntime::GetWorld();
 		if (!world)
 			return false;
 
