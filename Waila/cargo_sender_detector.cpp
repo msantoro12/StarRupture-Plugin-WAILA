@@ -113,7 +113,12 @@ namespace Waila
 				const uint8_t* helper = reinterpret_cast<const uint8_t*>(&bestMatch->Entity);
 				const PluginFieldSpec& netIdField = Fields::HelperNetID;
 				const PluginFieldSpec& entityField = Fields::HelperEntity;
-				if (!connArray || netIdField.offset < 0 || entityField.offset < 0)
+				// Both dwords are read at a resolved offset inside the helper struct, whose
+				// size is checked against the running build.
+				constexpr int32_t kDword = sizeof(uint32_t);
+				if (!connArray || netIdField.offset < 0 || entityField.offset < 0 ||
+					netIdField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)) ||
+					entityField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)))
 					return true;
 				uint32_t netIdDword0 = *reinterpret_cast<const uint32_t*>(helper + netIdField.offset);
 				uint32_t netIdDword2 = *reinterpret_cast<const uint32_t*>(helper + entityField.offset);
