@@ -108,3 +108,9 @@ Engine tick → WailaUIManager::Tick()
 ## License
 
 This project is provided as-is for modding purposes. See the StarRupture ModLoader documentation for distribution terms.
+
+## Credits
+
+Original mod by [@AlienXAXS](https://github.com/AlienXAXS).
+
+Maintained by [@msantoro12](https://github.com/msantoro12).
