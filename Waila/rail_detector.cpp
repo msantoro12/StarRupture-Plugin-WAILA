@@ -339,6 +339,10 @@ namespace Waila
 		// More than this many distinct buildings stops being a glance.
 		constexpr size_t kMaxPeers = 32;
 
+		// Stands in for a building the Mass data cannot name: its entity is gone,
+		// has no building parameters, or they hold no building data.
+		const std::string kUnknownBuilding = "Unknown building";
+
 		// One building and one item, seen at an end of the rail's traffic. Kept
 		// between refreshes while the player keeps aiming at the rail, so a rail
 		// whose drones come and go still lists everything seen on it. Item data
@@ -350,7 +354,7 @@ namespace Waila
 			FWeakObjectPtr   item;
 			std::string      itemUnique;
 			std::string      itemDisplay;
-			std::string      buildingName;   // empty until the building is loaded once
+			std::string      buildingName;   // empty until its building data could be read
 			float            perMinNow = -1.0f;
 		};
 
@@ -366,23 +370,16 @@ namespace Waila
 
 		MassCache g_massCache;
 
-		// The name of every loaded building by its Mass entity.
-		std::unordered_map<RailMass::Entity, std::string> LoadedBuildingNames(UWorld* world)
+		// The building's name from its Mass entity's building parameters, which
+		// every entity keeps whether or not its actor is loaded. Empty when the
+		// entity is gone or has no building data to name it.
+		std::string BuildingNameOf(RailMass::Entity entity)
 		{
-			std::unordered_map<RailMass::Entity, std::string> names;
-			TArray<AActor*> all{};
-			UGameplayStatics::GetAllActorsOfClass(world, ACrDroneSupplySystemBuildingBase::StaticClass(), &all);
-			for (int32_t i = 0; i < all.Num(); ++i)
-			{
-				AActor* building = all[i];
-				const RailMass::Entity entity = RailMass::EntityOf(building);
-				if (!entity)
-					continue;
-				std::string name, desc;
-				if (Fields::ReadBuildingTexts(Fields::BuildingDataOf(static_cast<ACrBuildingActorBase*>(building)), name, desc))
-					names.emplace(entity, std::move(name));
-			}
-			return names;
+			SDK::UCrBuildingData* data = nullptr;
+			std::string name, desc;
+			if (RailMass::ReadBuilding(entity, data) && Fields::ReadBuildingTexts(data, name, desc))
+				return name;
+			return std::string();
 		}
 
 		// A crafter's rate for the item the rail moves: only when it makes that item.
@@ -425,7 +422,7 @@ namespace Waila
 			}
 		}
 
-		void RefreshMass(AActor* rail, UWorld* world, MassCache& cache)
+		void RefreshMass(AActor* rail, MassCache& cache)
 		{
 			RailMass::Observation seen;
 			const RailMass::Entity entity = RailMass::EntityOf(rail);
@@ -437,21 +434,10 @@ namespace Waila
 				RailMass::ReadCapacity(entity, cache.capacity);
 			}
 
-			std::unordered_map<RailMass::Entity, std::string> names;
-			bool namesRead = false;
 			for (MassPeer& peer : cache.peers)
 			{
 				if (peer.buildingName.empty())
-				{
-					if (!namesRead)
-					{
-						names = LoadedBuildingNames(world);
-						namesRead = true;
-					}
-					const auto found = names.find(peer.entity);
-					if (found != names.end())
-						peer.buildingName = found->second;
-				}
+					peer.buildingName = BuildingNameOf(peer.entity);
 				RateOf(peer);
 			}
 		}
@@ -505,19 +491,40 @@ namespace Waila
 				g_massCache.rail  = actor;
 				g_massCache.stamp = now;
 				if (world)
-					RefreshMass(actor, world, g_massCache);
+					RefreshMass(actor, g_massCache);
 			}
 
 			outInfo.fromMass = true;
+
+			// One row per end, building and item: buildings of the same name making
+			// or taking the same item merge into one row, whichever entities they
+			// are. rowKeys holds each row's key at the same index as outInfo.peers.
+			std::vector<std::string> rowKeys;
 			for (const MassPeer& peer : g_massCache.peers)
 			{
 				// A filtered rail only carries that item.
 				if (!filterUnique.empty() && peer.itemUnique != filterUnique)
 					continue;
 
+				// Only a building the Mass data cannot name stays unnamed: its entity
+				// is gone, or the game keeps no building data for it.
+				const std::string& name = peer.buildingName.empty() ? kUnknownBuilding : peer.buildingName;
+				++(peer.source ? outInfo.fromCount : outInfo.destCount);
+
+				const std::string key = (peer.source ? "from|" : "to|") + name + "|" + peer.itemUnique;
+				const auto same = std::find(rowKeys.begin(), rowKeys.end(), key);
+				if (same != rowKeys.end())
+				{
+					RailPeerEntry& merged = outInfo.peers[static_cast<size_t>(same - rowKeys.begin())];
+					++merged.count;
+					if (peer.perMinNow >= 0.0f)
+						merged.perMinNow = (std::max)(merged.perMinNow, 0.0f) + peer.perMinNow;
+					continue;
+				}
+
 				RailPeerEntry entry;
 				entry.source       = peer.source;
-				entry.buildingName = peer.buildingName.empty() ? "Out of range" : peer.buildingName;
+				entry.buildingName = name;
 				entry.itemName     = peer.itemDisplay;
 				entry.perMinNow    = peer.perMinNow;
 
@@ -526,7 +533,7 @@ namespace Waila
 				if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 					entry.itemData = static_cast<UAuItemDataBase*>(obj);
 
-				++(peer.source ? outInfo.fromCount : outInfo.destCount);
+				rowKeys.push_back(key);
 				outInfo.peers.push_back(std::move(entry));
 			}
 			// Sources first.

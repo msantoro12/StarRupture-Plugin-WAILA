@@ -19,12 +19,15 @@ namespace Waila
 		float                 perMinNow = -1.0f;   // what is left given the machines asking for it now
 	};
 
-	// One building at an end of the rail's traffic: where an item comes from or
-	// goes to. The rate is items per minute, negative when not known or not a crafter.
+	// The buildings of one kind at an end of the rail's traffic: where an item
+	// comes from or goes to, one row for all the buildings of a name making or
+	// taking that item. The rate is items per minute, summed over those buildings,
+	// negative when not known or not a crafter.
 	struct RailPeerEntry
 	{
 		bool                  source = false;   // false: the item goes there
 		std::string           buildingName;
+		int32_t               count = 1;   // buildings merged into this row
 		SDK::UAuItemDataBase* itemData = nullptr;
 		std::string           itemName;
 		float                 perMinNow = -1.0f;

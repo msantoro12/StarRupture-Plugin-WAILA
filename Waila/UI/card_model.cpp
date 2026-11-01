@@ -324,7 +324,8 @@ namespace Waila::UI
 
 				RateRow row;
 				row.icon = Icons::ForItem(p.itemData);
-				row.name = (p.source ? "From " : "To ") + p.buildingName
+				row.name = std::string(p.source ? "From " : "To ")
+					+ (p.count > 1 ? std::to_string(p.count) + "x " : std::string()) + p.buildingName
 					+ (p.itemName.empty() ? std::string() : ": " + p.itemName);
 				if (p.perMinNow >= 0.0f)
 				{

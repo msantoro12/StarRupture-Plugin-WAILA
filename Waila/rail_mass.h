@@ -6,7 +6,7 @@
 struct IPluginSelf;
 struct IPluginHookScanner;
 
-namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; }
+namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; class UCrBuildingData; }
 
 // Reads the game's drone logistics from its Mass simulation, which runs for the
 // whole world whether or not a building is loaded: a rail's lane holds the
@@ -73,6 +73,12 @@ namespace Waila::RailMass
 	// a fault turns the reader off for the rest of the session.
 	bool Observe(Entity rail, Observation& out);
 	bool ReadCrafter(Entity building, CrafterState& out);
+
+	// The building a Mass entity is, from its building parameters (the entity
+	// keeps them whether or not its actor is loaded). The pointer is valid only
+	// in the tick it was read. False when the entity is gone, has no building
+	// parameters, or they name no building data; `out` is then null.
+	bool ReadBuilding(Entity building, SDK::UCrBuildingData*& out);
 
 	// The most items a minute the rail's lane lets through, from the lane's own
 	// speed and spacing. A drone carries one item, so this holds for any item.
