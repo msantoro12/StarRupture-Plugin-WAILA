@@ -241,10 +241,11 @@ namespace Waila::UI
 			return w;
 		}
 
-		// The two figure columns are as wide as the longest figure in each.
+		// The three figure columns are as wide as the longest figure in each.
 		struct RateMetrics
 		{
 			float nameW = 0.0f;
+			float minW  = 0.0f;
 			float nowW  = 0.0f;
 			float maxW  = 0.0f;
 		};
@@ -255,6 +256,7 @@ namespace Waila::UI
 			for (const auto& row : m.rates)
 			{
 				r.nameW = (std::max)(r.nameW, EstimateW(row.name, kFontLabel));
+				r.minW  = (std::max)(r.minW,  EstimateW(row.min,  kFontLabel));
 				r.nowW  = (std::max)(r.nowW,  EstimateW(row.now,  kFontLabel));
 				r.maxW  = (std::max)(r.maxW,  EstimateW(row.max,  kFontLabel));
 			}
@@ -273,7 +275,7 @@ namespace Waila::UI
 			const RateMetrics r = MeasureRates(m);
 			if (m.rates.empty())
 				return r.nameW;
-			return kRateIcon + kRateGap + r.nameW + kRateColGap + r.nowW + kRateColGap + r.maxW;
+			return kRateIcon + kRateGap + r.nameW + kRateColGap + r.minW + kRateColGap + r.nowW + kRateColGap + r.maxW;
 		}
 
 		// A card narrower than its own title is worse than a card with air in it.
@@ -642,11 +644,12 @@ namespace Waila::UI
 				return;
 			}
 
-			// Figures right-align to the card edge, "max" outermost.
+			// Figures right-align to the card edge, "max" outermost, then "now", "min".
 			const RateMetrics rm = MeasureRates(m);
 			const float maxRight = right;
 			const float nowRight = right - (rm.maxW + kRateColGap) * s;
-			const float nameMaxW = nowRight - (rm.nowW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
+			const float minRight = nowRight - (rm.nowW + kRateColGap) * s;
+			const float nameMaxW = minRight - (rm.minW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
 
 			for (size_t i = 0; i < m.rates.size(); ++i)
 			{
@@ -663,6 +666,7 @@ namespace Waila::UI
 					row.name.c_str(), pal.textPrimary, kFontLabel * s);
 
 				const Color nowColor = row.tone == Health::Idle ? pal.textPrimary : Theme::Of(pal, row.tone);
+				Draw::TextRight(ui, dl, minRight, textY, row.min.c_str(), pal.textMuted, kFontLabel * s);
 				Draw::TextRight(ui, dl, nowRight, textY, row.now.c_str(), nowColor, kFontLabel * s);
 				Draw::TextRight(ui, dl, maxRight, textY, row.max.c_str(), pal.textMuted, kFontLabel * s);
 			}

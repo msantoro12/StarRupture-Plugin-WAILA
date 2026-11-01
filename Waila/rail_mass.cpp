@@ -8,8 +8,10 @@
 #include "Chimera_classes.hpp"
 #include "AuItems_classes.hpp"
 #include "AuCrafting_classes.hpp"
+#include "Chimera_structs.hpp"
 
 #include <windows.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -128,6 +130,7 @@ namespace Waila::RailMass
 		constexpr uint32_t kArray  = sizeof(TArray<uint8_t>);
 		constexpr uint32_t kFloat  = sizeof(float);
 		constexpr uint32_t kBool   = sizeof(bool);
+		constexpr uint32_t kByte   = sizeof(uint8_t);
 
 		// An actor's Mass component, and the entity the component made.
 		Member mMassComponent  = RAIL_MEMBER(ACrBuildingActorBase, MassActorComponent, nullptr, kPtr);
@@ -161,20 +164,33 @@ namespace Waila::RailMass
 		Member mMissingItems   = RAIL_MEMBER(FCrCraftingFragment, bIsMissingItems, nullptr, kBool);
 		Member mOutputFull     = RAIL_MEMBER(FCrCraftingFragment, bOutputFull, nullptr, kBool);
 
-		// A lane's speed and spacing: its own parameters, whether a route starts
-		// on it, and the drone settings' gap for joining it.
+		Member* const kMembers[] = {
+			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
+			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
+			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
+			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
+		};
+
+		// The rail capacity read, a feature of its own: a lane's speed and
+		// spacing, whether a route starts on it, and the drone settings' gap for
+		// joining it. Its miss turns off the max figure and nothing else.
 		Member mLineMoveSpeed  = RAIL_MEMBER(FCrLogisticsLineParameters, MoveSpeed, nullptr, kFloat);
 		Member mLineSlotLength = RAIL_MEMBER(FCrLogisticsLineParameters, SlotLength, nullptr, kFloat);
 		Member mIsStartLine    = RAIL_MEMBER(FCrLogisticsLineFragment, bIsStartLine, nullptr, kBool);
 		Member mHalfSlotLength = RAIL_MEMBER(UDronesDeveloperSettings, HalfRailSlotLengthDefault, nullptr, kFloat);
 
-		Member* const kMembers[] = {
-			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
-			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
-			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
-			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull, &mLineMoveSpeed,
-			&mLineSlotLength, &mIsStartLine, &mHalfSlotLength,
-		};
+		Member* const kCapacityMembers[] = { &mLineMoveSpeed, &mLineSlotLength, &mIsStartLine, &mHalfSlotLength };
+
+		// The machine request read, a feature of its own: what a building asks
+		// drones to bring. A building's container lists its requests (ids of
+		// request entities) and holds the ones not started yet; each request says
+		// whether it wants an item brought (Acquire) or taken away (Store).
+		Member mRequestList    = RAIL_MEMBER(FCrLogisticsRequestContainerFragment, Requests, nullptr, kArray);
+		Member mPendingList    = RAIL_MEMBER(FCrLogisticsRequestContainerFragment, PendingRequests, nullptr, kArray);
+		Member mRequestType    = RAIL_MEMBER(FCrLogisticsRequestData, Type, nullptr, kByte);
+		Member mRequestAborted = RAIL_MEMBER(FCrLogisticsRequestData, bAborted, nullptr, kBool);
+
+		Member* const kRequestMembers[] = { &mRequestList, &mPendingList, &mRequestType, &mRequestAborted };
 
 		// The fragments' reflection objects, found by name on first use.
 		const UScriptStruct* g_lineStruct     = nullptr;
@@ -182,10 +198,15 @@ namespace Waila::RailMass
 		const UScriptStruct* g_agentStruct    = nullptr;
 		const UScriptStruct* g_requestStruct  = nullptr;
 		const UScriptStruct* g_craftingStruct = nullptr;
+		const UScriptStruct* g_containerStruct = nullptr;
 
 		PluginMap::Feature g_feature{ "rail-sources", "Where a drone rail's items come from and go to", {}, {} };
-		bool g_resolved = false;
-		bool g_faulted  = false;
+		PluginMap::Feature g_capacityFeature{ "rail-capacity", "How many items a minute a drone rail carries", {}, {} };
+		PluginMap::Feature g_requestFeature{ "rail-requests", "What a machine is asking drones to bring", {}, {} };
+		bool g_resolved         = false;
+		bool g_capacityResolved = false;
+		bool g_requestsResolved = false;
+		bool g_faulted          = false;
 
 		// Bounds on what one rail can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
@@ -268,8 +289,14 @@ namespace Waila::RailMass
 			if (!g_agentStruct)    g_agentStruct    = FindStruct("CrLogisticsAgentFragment");
 			if (!g_requestStruct)  g_requestStruct  = FindStruct("CrLogisticsRequestFragment");
 			if (!g_craftingStruct) g_craftingStruct = FindStruct("CrCraftingFragment");
-			if (!g_paramsStruct)   g_paramsStruct   = FindStruct("CrLogisticsLineParameters");
-			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct && g_paramsStruct;
+			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct;
+		}
+
+		const UScriptStruct* Found(const UScriptStruct*& cache, const char* name)
+		{
+			if (!cache)
+				cache = FindStruct(name);
+			return cache;
 		}
 
 		const void* Manager(const UWorld* world)
@@ -412,7 +439,7 @@ namespace Waila::RailMass
 		// (UpdateRequests clamps the carried count to 1), whatever the item.
 		void ReadCapacityImpl(Entity rail, float& perMin)
 		{
-			if (!FindStructs())
+			if (!FindStructs() || !Found(g_paramsStruct, "CrLogisticsLineParameters"))
 				return;
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* line   = manager ? Fragment(manager, rail, g_lineStruct) : nullptr;
@@ -430,6 +457,45 @@ namespace Waila::RailMass
 			const float gap     = slot > joinGap ? slot : joinGap;
 			if (speed > 0.0f && gap > 0.0f && std::isfinite(speed / gap))
 				perMin = speed / gap * 60.0f;
+		}
+
+		// An open request that wants an item brought: not aborted, of type Acquire.
+		void AddWanted(const uint8_t* request, std::vector<UAuItemDataBase*>& wanted)
+		{
+			if (ReadAt<bool>(request, mRequestAborted.Offset())
+				|| ReadAt<uint8_t>(request, mRequestType.Offset()) != static_cast<uint8_t>(ECrLogisticsRequestType::Acquire))
+				return;
+			UAuItemDataBase* item = ItemOf(request + mWantedItem.Offset());
+			if (item && std::find(wanted.begin(), wanted.end(), item) == wanted.end())
+				wanted.push_back(item);
+		}
+
+		// What a building asks the drones to bring, from the request container on
+		// its Mass entity: the requests it has made (by id) and the ones waiting
+		// to start. A building with no container leaves `known` false.
+		void ReadRequestsImpl(Entity building, Requests& out)
+		{
+			const UWorld* world = PluginSdkRuntime::GetWorld();
+			if (!FindStructs() || !Found(g_containerStruct, "CrLogisticsRequestContainerFragment") || !world)
+				return;
+			const void* manager = Manager(world);
+			const uint8_t* container = manager ? Fragment(manager, building, g_containerStruct) : nullptr;
+			if (!container)
+				return;
+			out.known = true;
+
+			const RawArray made = ArrayAt(container, mRequestList.Offset());
+			for (int32_t i = 0; i < made.num; ++i)
+			{
+				const Entity entity = HandleOf(made.data + static_cast<size_t>(i) * kPersistentSize.size, world);
+				const uint8_t* request = Fragment(manager, entity, g_requestStruct);
+				if (request)
+					AddWanted(request + mRequestData.Offset(), out.wanted);
+			}
+
+			const RawArray waiting = ArrayAt(container, mPendingList.Offset());
+			for (int32_t i = 0; i < waiting.num; ++i)
+				AddWanted(waiting.data + static_cast<size_t>(i) * kRequestSize.size, out.wanted);
 		}
 
 		// A bad pointer in the game's data must not take the game down.
@@ -465,22 +531,35 @@ namespace Waila::RailMass
 
 	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner, const std::vector<const char*>& alsoNeeds)
 	{
-		std::vector<const char*>& keys = g_feature.keys;
-		keys.clear();
+		// The keys every rail read starts from. The capacity and request reads
+		// list them too, so their own misses turn off only themselves while a
+		// miss here turns off all three.
+		std::vector<const char*> core;
 		for (const SizeRow* row : kSizeRows)
-			keys.push_back(row->key);
+			core.push_back(row->key);
 		for (const Member* member : kMembers)
-			keys.push_back(member->spec.key);
-		keys.push_back(Fields::HelperEntity.key);
-		keys.push_back(PluginMap::MassEntityManagerField.key);
-		keys.push_back(kKeyGetSubsystem);
-		keys.push_back(kKeyGetFragment);
-		keys.push_back(kKeyIsValid);
-		keys.push_back(kKeyIsBuilt);
-		keys.push_back(kKeyGetHandle);
-		keys.push_back(kKeyGetShared);
-		keys.insert(keys.end(), alsoNeeds.begin(), alsoNeeds.end());
-		return PluginMap::DeclareFeatures(scanner, self, g_feature);
+			core.push_back(member->spec.key);
+		core.push_back(Fields::HelperEntity.key);
+		core.push_back(PluginMap::MassEntityManagerField.key);
+		core.push_back(kKeyGetSubsystem);
+		core.push_back(kKeyGetFragment);
+		core.push_back(kKeyIsValid);
+		core.push_back(kKeyIsBuilt);
+		core.push_back(kKeyGetHandle);
+
+		g_feature.keys = core;
+		g_feature.keys.insert(g_feature.keys.end(), alsoNeeds.begin(), alsoNeeds.end());
+
+		g_capacityFeature.keys = core;
+		for (const Member* member : kCapacityMembers)
+			g_capacityFeature.keys.push_back(member->spec.key);
+		g_capacityFeature.keys.push_back(kKeyGetShared);
+
+		g_requestFeature.keys = core;
+		for (const Member* member : kRequestMembers)
+			g_requestFeature.keys.push_back(member->spec.key);
+
+		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_requestFeature);
 	}
 
 	void Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -488,20 +567,34 @@ namespace Waila::RailMass
 		if (!self || !scanner)
 			return;
 
+		// A member, once the size it is checked against is known. A miss is
+		// recorded by the loader and turns off the feature that lists it. The
+		// struct sizes are resolved first, so a member whose struct did not
+		// resolve is skipped here; that miss is already recorded.
+		auto resolveMember = [&](Member& member)
+		{
+			const uint32_t size = member.type ? member.type->size : member.fixed;
+			if (!size)
+				return false;
+			member.spec.size = size;
+			return PluginMap::ResolveField(scanner, self, member.spec);
+		};
+
 		// Every key is asked even after a miss, so the log lists them all.
 		bool all = true;
 		for (SizeRow* row : kSizeRows)
 			all = ResolveSize(scanner, self, *row) && all;
 
 		for (Member* member : kMembers)
-		{
-			const uint32_t size = member->type ? member->type->size : member->fixed;
-			if (!size)
-				continue;   // its struct did not resolve; that miss is already recorded
-			member->spec.size = size;
-			all = PluginMap::ResolveField(scanner, self, member->spec) && all;
-		}
+			all = resolveMember(*member) && all;
 		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
+
+		bool capacity = true;
+		for (Member* member : kCapacityMembers)
+			capacity = resolveMember(*member) && capacity;
+		bool requests = true;
+		for (Member* member : kRequestMembers)
+			requests = resolveMember(*member) && requests;
 
 		const uintptr_t getSubsystem = ResolveFunction(scanner, self, kKeyGetSubsystem, kPatGetSubsystem, kAtGetSubsystem);
 		const uintptr_t getFragment  = ResolveFunction(scanner, self, kKeyGetFragment, kPatGetFragment, kAtGetFragment);
@@ -516,16 +609,32 @@ namespace Waila::RailMass
 		g_getHandle    = reinterpret_cast<GetHandleFn>(getHandle);
 		g_getShared    = reinterpret_cast<GetSharedFn>(getShared);
 
-		g_resolved = all && getSubsystem && getFragment && isValid && isBuilt && getHandle && getShared;
+		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle;
+		g_capacityResolved = capacity && getShared;
+		g_requestsResolved = requests;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
+		else if (!g_capacityResolved || !g_capacityFeature.On())
+			LOG_WARN("RailMass: the rail capacity is off on this build; a rail shows no max, the rest of its card is unaffected");
+		if (g_resolved && g_feature.On() && (!g_requestsResolved || !g_requestFeature.On()))
+			LOG_WARN("RailMass: machine requests are off on this build; a rail shows no now figure, the rest of its card is unaffected");
 	}
 
 	bool Available()
 	{
 		return g_resolved && g_feature.On() && !g_faulted
-			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && g_getShared
+			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle
 			&& Fields::HelperEntity.offset >= 0;
+	}
+
+	bool CapacityAvailable()
+	{
+		return Available() && g_capacityResolved && g_capacityFeature.On() && g_getShared;
+	}
+
+	bool RequestsAvailable()
+	{
+		return Available() && g_requestsResolved && g_requestFeature.On();
 	}
 
 	Entity EntityOf(AActor* actor)
@@ -555,8 +664,15 @@ namespace Waila::RailMass
 
 	bool ReadCapacity(Entity rail, float& perMin)
 	{
-		if (!Available())
+		if (!CapacityAvailable())
 			return false;
 		return Guarded([&] { ReadCapacityImpl(rail, perMin); });
+	}
+
+	bool ReadRequests(Entity building, Requests& out)
+	{
+		if (!RequestsAvailable())
+			return false;
+		return Guarded([&] { ReadRequestsImpl(building, out); });
 	}
 }

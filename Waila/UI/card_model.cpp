@@ -312,7 +312,7 @@ namespace Waila::UI
 	{
 		// Where the rail's items come from, then where they go, under the item
 		// rates, in the rows left. A crafter shows what it makes now; storage and
-		// stations have no rate, and max is the rail's, so those stay blank.
+		// stations have no rate, and min and max are the rail's, so those stay blank.
 		// Returns the rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
 		{
@@ -353,15 +353,13 @@ namespace Waila::UI
 			RateRow row;
 			row.icon = Icons::ForItem(r.itemData);
 			row.name = r.displayName;
+			row.min  = PerMin(r.perMinMin);
 			row.now  = PerMin(r.perMinNow);
 			row.max  = PerMin(r.perMinMax);
 
-			// Red when nothing is being made, amber when more is made than the
-			// rail can carry.
+			// Red when nothing is left for this stretch right now.
 			if (r.perMinNow == 0.0f)
 				row.tone = Health::Bad;
-			else if (r.perMinMax > 0.0f && r.perMinNow > r.perMinMax * 1.001f)
-				row.tone = Health::Warn;
 			out.rates.push_back(std::move(row));
 		}
 		size_t more = info.rates.size() > kMaxRateRows ? info.rates.size() - kMaxRateRows : 0;
@@ -384,7 +382,7 @@ namespace Waila::UI
 			out.statusText = buf;
 		}
 
-		out.footLeft = "items / min: now, max";
+		out.footLeft = "items / min: min, now, max";
 		if (more > 0)
 		{
 			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));

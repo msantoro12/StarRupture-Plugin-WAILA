@@ -136,6 +136,14 @@ namespace Waila::RailNetwork
 		std::vector<size_t> crafters;    // indices into Scene::buildings
 		size_t              rails = 0;   // how many rails the walk reached, the start one included
 		bool                truncated = false;
+		std::vector<size_t> walked;      // those rails: the start one first, then each against the flow
+	};
+
+	// The crafters that take items off the line before a rail, see Graph::FindConsumers.
+	struct Consumers
+	{
+		std::vector<size_t> crafters;    // indices into Scene::buildings
+		bool                truncated = false;
 	};
 
 	// INFERRED, as is everything about which buildings a rail serves: the SDK
@@ -257,15 +265,31 @@ namespace Waila::RailNetwork
 				sockets.Add(i, scene.sockets[i].at);
 
 			m_start.resize(scene.rails.size());
+			m_end.resize(scene.rails.size());
 			m_endsAtBuilding.resize(scene.buildings.size());
+			m_startsAtBuilding.resize(scene.buildings.size());
 
 			for (size_t r = 0; r < scene.rails.size(); ++r)
 			{
 				m_start[r] = Place(scene.rails[r].start, sockets);
-				if (m_start[r].kind == Port::Kind::Loose)
+				switch (m_start[r].kind)
+				{
+				case Port::Kind::Socket:
+				{
+					const Socket& s = scene.sockets[m_start[r].index];
+					m_startsAtPoint[{ s.point, s.lane }].push_back(r);
+					break;
+				}
+				case Port::Kind::Building:
+					m_startsAtBuilding[m_start[r].index].push_back(r);
+					break;
+				case Port::Kind::Loose:
 					looseStarts.Add(r, scene.rails[r].start);
+					break;
+				}
 
 				const Port end = Place(scene.rails[r].end, sockets);
+				m_end[r] = end;
 				switch (end.kind)
 				{
 				case Port::Kind::Socket:
@@ -407,6 +431,82 @@ namespace Waila::RailNetwork
 			}
 
 			out.rails = queue.size();
+			out.walked = std::move(queue);
+			return out;
+		}
+
+		// The crafters that take items off the line before the rail `upstream` was
+		// found for. At every path point or storage the walk against the flow
+		// passed, a rail that starts there too is a branch, and the crafters its
+		// rails end at pull from the line ahead of this rail. Storage on a branch
+		// is a sink and not counted, a crafter ends the branch, and a branch that
+		// ends loose is not followed. Rails the walk itself used are left out, so
+		// a branch that finds its way back to the line adds nothing. A start that
+		// sits loose has no known branches.
+		Consumers FindConsumers(const Sources& upstream, size_t maxRails, size_t maxCrafters) const
+		{
+			Consumers out;
+			std::vector<bool>          seen(m_scene.rails.size(), false);
+			std::vector<size_t>        queue;
+			std::unordered_set<size_t> found;
+			for (size_t used : upstream.walked)
+				seen[used] = true;
+
+			auto branch = [&](const std::vector<size_t>& rails)
+			{
+				for (size_t next : rails)
+				{
+					if (seen[next])
+						continue;
+					if (queue.size() >= maxRails)
+					{
+						out.truncated = true;
+						return;
+					}
+					seen[next] = true;
+					queue.push_back(next);
+				}
+			};
+			auto startingAt = [&](const Socket& s) -> const std::vector<size_t>*
+			{
+				const auto it = m_startsAtPoint.find({ s.point, s.lane });
+				return it == m_startsAtPoint.end() ? nullptr : &it->second;
+			};
+
+			for (size_t used : upstream.walked)
+			{
+				const Port& start = m_start[used];
+				if (start.kind == Port::Kind::Socket)
+				{
+					if (const auto* rails = startingAt(m_scene.sockets[start.index]))
+						branch(*rails);
+				}
+				else if (start.kind == Port::Kind::Building && !m_scene.buildings[start.index].crafter)
+				{
+					branch(m_startsAtBuilding[start.index]);
+				}
+			}
+
+			for (size_t head = 0; head < queue.size() && !out.truncated; ++head)
+			{
+				const Port& end = m_end[queue[head]];
+				if (end.kind == Port::Kind::Socket)
+				{
+					if (const auto* rails = startingAt(m_scene.sockets[end.index]))
+						branch(*rails);
+				}
+				else if (end.kind == Port::Kind::Building && m_scene.buildings[end.index].crafter
+				         && !found.count(end.index))
+				{
+					if (out.crafters.size() >= maxCrafters)
+					{
+						out.truncated = true;
+						break;
+					}
+					found.insert(end.index);
+					out.crafters.push_back(end.index);
+				}
+			}
 			return out;
 		}
 
@@ -452,8 +552,11 @@ namespace Waila::RailNetwork
 
 		const Scene&                                          m_scene;
 		std::vector<Port>                                     m_start;
+		std::vector<Port>                                     m_end;
 		std::map<std::pair<size_t, int32_t>, std::vector<size_t>> m_endsAtPoint;
+		std::map<std::pair<size_t, int32_t>, std::vector<size_t>> m_startsAtPoint;
 		std::vector<std::vector<size_t>>                      m_endsAtBuilding;
+		std::vector<std::vector<size_t>>                      m_startsAtBuilding;
 		Detail::PointGrid                                     m_looseEnds;
 		std::vector<bool>                                     m_laneTrack;
 	};

@@ -242,6 +242,24 @@ namespace Waila::Fields
 		return itemClass;
 	}
 
+	// A recipe stores ingredients as item *classes*; everything worth showing
+	// (icon, display name, unique name) lives on the class default object.
+	inline SDK::UAuItemDataBase* ItemDefaultsOf(SDK::UClass* itemClass)
+	{
+		if (!itemClass)
+			return nullptr;
+
+		SDK::UObject* cdo = itemClass->ClassDefaultObject;
+		if (!cdo)
+			return nullptr;
+
+		bool isItem = false;
+		try { isItem = cdo->IsA(SDK::UAuItemDataBase::StaticClass()); }
+		catch (...) { return nullptr; }
+
+		return isItem ? static_cast<SDK::UAuItemDataBase*>(cdo) : nullptr;
+	}
+
 	// A recipe's output: how many it makes, and which item.
 	inline int32_t RecipeOutputCount(const SDK::UAuItemRecipeData* recipe)
 	{
@@ -364,4 +382,11 @@ namespace Waila::Features
 
 	// A drone rail's sources and destinations from the game's Mass data.
 	inline bool ShowRailSources()      { return RailMass::Available(); }
+
+	// The rail's max, from the lane's own speed and spacing.
+	inline bool ShowRailCapacity()     { return RailMass::CapacityAvailable(); }
+
+	// What the machines on a rail ask for, which sets its now; read against
+	// their recipes, so the crafter keys are needed too.
+	inline bool ShowRailRequests()     { return RailMass::RequestsAvailable() && Crafters.On(); }
 }

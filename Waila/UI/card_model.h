@@ -39,12 +39,14 @@ namespace Waila::UI
 		Health      tone = Health::Idle;
 	};
 
-	// One item a drone rail's sources make, with its rate per minute now and at
-	// full capacity. Either figure reads "?" when it could not be worked out.
+	// One item a drone rail's sources make, with the three potentials per minute
+	// of the stretch under the cursor: min, now and max. Any figure reads "?"
+	// when it could not be worked out.
 	struct RateRow
 	{
 		PluginTextureHandle icon = nullptr;
 		std::string         name;
+		std::string         min;
 		std::string         now;
 		std::string         max;
 		Health              tone = Health::Idle;

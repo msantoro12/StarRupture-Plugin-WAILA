@@ -34,16 +34,22 @@ namespace Waila
 
 		constexpr std::chrono::milliseconds kRefresh{ 1000 };
 
-		// One item's running totals while the sources are summed.
+		// One item's totals while the sources and the consumers are summed.
 		struct Tally
 		{
 			FWeakObjectPtr item;
 			std::string    uniqueName;
 			std::string    displayName;
 			int32_t        sources    = 0;
-			float          nowPerMin  = 0.0f;
 			float          fullPerMin = 0.0f;   // with every source running; orders the list
-			bool           nowKnown   = true;   // false once any source's rate or state could not be read
+			bool           fullKnown  = true;   // false once any source's rate could not be read
+
+			// What the machines taking this item off the line ahead of the rail use,
+			// in items a minute: all of them running full out, and just the ones
+			// asking the drones for it right now.
+			float          inputFullPerMin      = 0.0f;
+			float          inputRequestedPerMin = 0.0f;
+			bool           requestsKnown        = true;   // false once any such machine's requests could not be read
 		};
 
 		// Everything the card shows for one rail, kept between refreshes. Item data
@@ -61,32 +67,41 @@ namespace Waila
 
 		Cache g_cache;
 
+		// Items per minute of count items per craft of a recipe at a crafting
+		// speed: count / BuildTime x speed x 60.
+		bool CountRate(UAuItemRecipeData* recipe, int32_t count, float speed, float& outRate)
+		{
+			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
+			if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
+				return false;
+
+			outRate = static_cast<float>(count) / buildTime * speed * 60.0f;
+			return true;
+		}
+
 		// Items per minute of one recipe at a crafting speed: output count /
 		// BuildTime x speed x 60. countOverride (when above 0) replaces the
 		// recipe's own output count.
 		bool RecipeRate(UAuItemRecipeData* recipe, int32_t countOverride, float speed, float& outFull)
 		{
-			const int32_t count = countOverride > 0 ? countOverride : Fields::RecipeOutputCount(recipe);
-			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
-			if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
-				return false;
-
-			outFull = static_cast<float>(count) / buildTime * speed * 60.0f;
-			return true;
+			return CountRate(recipe, countOverride > 0 ? countOverride : Fields::RecipeOutputCount(recipe), speed, outFull);
 		}
 
-		// Items per minute of one crafter, from the recipe it is working on, or for
-		// an idle crafter the recipe it is set to.
-		// full = output count / BuildTime x CraftingSpeed x 60.
-		// CraftingSpeed is the live one from the crafting fragment, falling back to
-		// the class default. CraftingMultiplier is left out (INFERRED: it sets how
-		// many are requested, not how fast they are made).
-		// outItem is set whenever there is a recipe; the return value is false when
-		// the rate itself can't be worked out.
-		bool CrafterFullRate(ACrCrafter* crafter, UAuItemDataBase*& outItem, float& outFull)
+		// What a crafter works on: the recipe it is making, or for an idle crafter
+		// the recipe it is set to, the output count of its queue entry (0 when it
+		// has none) and its crafting speed. CraftingSpeed is the live one from the
+		// crafting fragment, falling back to the class default. CraftingMultiplier
+		// is left out (INFERRED: it sets how many are requested, not how fast they
+		// are made). False when there is no recipe.
+		struct CrafterWork
 		{
-			outItem = nullptr;
+			UAuItemRecipeData* recipe      = nullptr;
+			int32_t            outputCount = 0;
+			float              speed       = 0.0f;
+		};
 
+		bool CrafterWorkOf(ACrCrafter* crafter, CrafterWork& out)
+		{
 			UCrCraftingComponent* comp = Fields::ValueOr<UCrCraftingComponent*>(Fields::CraftComponent, crafter, nullptr);
 			if (!comp)
 				return false;
@@ -106,43 +121,29 @@ namespace Waila
 												: nullptr;
 			if (!recipe)
 				return false;
-			outItem = recipe->GetItemDataBase();
-			if (!outItem)
-				return false;
 
 			const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter);
-			const float speed = frag ? Fields::ValueOr<float>(Fields::FragSpeed, frag)
-			                         : Fields::ValueOr<float>(Fields::SettingsSpeed, settings);
-			return RecipeRate(recipe, queued ? first.outputCount : 0, speed, outFull);
+			out.recipe      = recipe;
+			out.outputCount = queued ? first.outputCount : 0;
+			out.speed       = frag ? Fields::ValueOr<float>(Fields::FragSpeed, frag)
+			                       : Fields::ValueOr<float>(Fields::SettingsSpeed, settings);
+			return true;
 		}
 
-		// Whether the crafter is producing right now: the game's own building state
-		// says it is working, and none of the stalling flags is set. Inefficient
-		// counts as working, and LowElectricity is left out: INFERRED to slow a
-		// machine rather than stop it, with no slowdown factor exposed.
-		// Returns false in `known` when the state could not be read.
-		bool CrafterRunning(ACrCrafter* crafter, bool& known)
+		// Items per minute of one crafter: output count / BuildTime x CraftingSpeed
+		// x 60. outItem is set whenever there is a recipe; the return value is
+		// false when the rate itself can't be worked out.
+		bool CrafterFullRate(ACrCrafter* crafter, UAuItemDataBase*& outItem, float& outFull)
 		{
-			const ECrBuildingState state = crafter->GetBuildingState();
-			known = state != ECrBuildingState::Unknown;
-			if (state != ECrBuildingState::Working && state != ECrBuildingState::Inefficient)
+			outItem = nullptr;
+
+			CrafterWork work;
+			if (!CrafterWorkOf(crafter, work))
 				return false;
-
-			static constexpr ECrBuildingMalfunctionFlags kStalls[] = {
-				ECrBuildingMalfunctionFlags::Disabled,
-				ECrBuildingMalfunctionFlags::NoElectricity,
-				ECrBuildingMalfunctionFlags::TemperatureOutOfRange,
-				ECrBuildingMalfunctionFlags::MissingInputItems,
-				ECrBuildingMalfunctionFlags::OutputFull,
-				ECrBuildingMalfunctionFlags::UnavailableInputItem,
-			};
-
-			for (ECrBuildingMalfunctionFlags flag : kStalls)
-			{
-				if (crafter->GetBuildingStateFlag(flag))
-					return false;
-			}
-			return true;
+			outItem = work.recipe->GetItemDataBase();
+			if (!outItem)
+				return false;
+			return RecipeRate(work.recipe, work.outputCount, work.speed, outFull);
 		}
 
 		RailNetwork::Vec3 ToVec(const FVector& v) { return { v.X, v.Y, v.Z }; }
@@ -275,19 +276,61 @@ namespace Waila
 
 				++t.sources;
 
-				if (!readable)
-				{
-					t.nowKnown = false;
+				if (readable)
+					t.fullPerMin += full;
+				else
+					t.fullKnown = false;
+			}
+		}
+
+		// The machines that take items off the line ahead of the rail, added to the
+		// totals of the items the rail carries. A machine takes each ingredient of
+		// its recipe at count / BuildTime x speed x 60 a minute; that goes into the
+		// full figure, and into the requested one when the machine is asking the
+		// drones for the item. A machine with no recipe takes nothing.
+		void CollectConsumers(const std::vector<ACrCrafter*>& crafters,
+		                      const std::vector<size_t>& consumers, Cache& out)
+		{
+			for (size_t consumer : consumers)
+			{
+				ACrCrafter* crafter = crafters[consumer];
+				CrafterWork work;
+				if (!crafter || !CrafterWorkOf(crafter, work))
 					continue;
+
+				bool                     asked = false;
+				RailMass::Requests       wanted;
+				std::vector<std::string> wantedNames;
+
+				const Fields::StructArray needed(Fields::NeededResources.In(work.recipe), Fields::RecipeOrderSize);
+				for (int32_t i = 0; i < needed.Num(); ++i)
+				{
+					const uint8_t* order = needed.At(i);
+					UAuItemDataBase* item = Fields::ItemDefaultsOf(Fields::OrderItemClass(order));
+					if (!item)
+						continue;
+
+					const std::string key = Fields::UniqueNameOf(item);
+					const auto tally = std::find_if(out.tallies.begin(), out.tallies.end(),
+						[&](const Tally& t) { return t.uniqueName == key; });
+					float rate = 0.0f;
+					if (tally == out.tallies.end()
+						|| !CountRate(work.recipe, Fields::ValueOr<int32_t>(Fields::OrderCount, order), work.speed, rate))
+						continue;
+					tally->inputFullPerMin += rate;
+
+					if (!asked)
+					{
+						asked = true;
+						RailMass::ReadRequests(RailMass::EntityOf(crafter), wanted);
+						for (UAuItemDataBase* want : wanted.wanted)
+							wantedNames.push_back(Fields::UniqueNameOf(want));
+					}
+					if (!wanted.known)
+						tally->requestsKnown = false;
+					else if (std::find(wantedNames.begin(), wantedNames.end(), key) != wantedNames.end())
+						tally->inputRequestedPerMin += rate;
 				}
-
-				t.fullPerMin += full;
-
-				bool stateKnown = false;
-				if (CrafterRunning(crafter, stateKnown))
-					t.nowPerMin += full;
-				else if (!stateKnown)
-					t.nowKnown = false;
 			}
 		}
 
@@ -518,8 +561,10 @@ namespace Waila
 				const RailNetwork::Graph   graph(scene);
 				const RailNetwork::Sources sources = graph.Find(
 					static_cast<size_t>(self - rails.begin()), kMaxRails, kMaxSources);
-				g_cache.truncated = sources.truncated;
+				const RailNetwork::Consumers consumers = graph.FindConsumers(sources, kMaxRails, kMaxSources);
+				g_cache.truncated = sources.truncated || consumers.truncated;
 				CollectSources(crafters, sources.crafters, g_cache);
+				CollectConsumers(crafters, consumers.crafters, g_cache);
 			}
 
 			// Biggest flows first, so a cut-off list drops the smallest.
@@ -530,7 +575,9 @@ namespace Waila
 		outInfo.truncated = g_cache.truncated;
 
 		// A drone carries one item, so the rail's capacity is the same for each.
-		const float capacity = Features::ShowRailSources() && g_massCache.rail == actor ? g_massCache.capacity : -1.0f;
+		const float capacity = Features::ShowRailCapacity() && g_massCache.rail == actor ? g_massCache.capacity : -1.0f;
+		const bool  capped   = capacity >= 0.0f;
+		const bool  asking   = Features::ShowRailRequests();
 
 		// A filtered rail only carries that item.
 		for (const Tally& t : g_cache.tallies)
@@ -548,9 +595,20 @@ namespace Waila
 			if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 				entry.itemData = static_cast<UAuItemDataBase*>(obj);
 
-			entry.perMinMax = capacity;
-			if (t.nowKnown)
-				entry.perMinNow = t.nowPerMin;
+			// Three potentials, items a minute. The sources' output is capped by what
+			// the rail carries. The machines ahead of this stretch take their share:
+			// min is what is left with all of them running full out, current what is
+			// left with just the ones asking for the item now. Without the capacity
+			// there is no max, and the other two come from the sources alone.
+			if (t.fullKnown)
+			{
+				const float supply = capped ? (std::min)(t.fullPerMin, capacity) : t.fullPerMin;
+				if (capped)
+					entry.perMinMax = supply;
+				entry.perMinMin = (std::max)(0.0f, supply - t.inputFullPerMin);
+				if (asking && t.requestsKnown)
+					entry.perMinNow = (std::max)(0.0f, supply - t.inputRequestedPerMin);
+			}
 			outInfo.rates.push_back(std::move(entry));
 		}
 

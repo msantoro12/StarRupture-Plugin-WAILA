@@ -35,6 +35,13 @@ namespace
 		return { found.crafters.begin(), found.crafters.end() };
 	}
 
+	std::set<size_t> ConsumersOf(const Scene& scene, size_t rail)
+	{
+		const Graph graph(scene);
+		const Consumers found = graph.FindConsumers(graph.Find(rail, 1024, 256), 1024, 256);
+		return { found.crafters.begin(), found.crafters.end() };
+	}
+
 	size_t AddRail(Scene& scene, Vec3 start, Vec3 end)
 	{
 		scene.rails.push_back({ start, end });
@@ -97,6 +104,35 @@ namespace
 		Check(SourcesOf(scene, toStorage) == std::set<size_t>{ a, b }, "junction joins both inputs");
 		Check(SourcesOf(scene, toUser) == std::set<size_t>{ a, b }, "storage passes its inputs through");
 		Check(SourcesOf(scene, fromUser) == std::set<size_t>{ user }, "an output rail shows only its own crafter");
+	}
+
+	// A crafter feeds a line; a branch off the first point ends at crafter m and
+	// one into storage; a branch off the second point ends at crafter n; the line
+	// ends at crafter z. A stretch shows the crafters branching off before it,
+	// never storage and never the crafter its own end feeds.
+	void TestConsumersBranchOffTheLine()
+	{
+		Scene scene;
+		const size_t src     = AddBuilding(scene, { 0, 0, 0 }, true);
+		const size_t m       = AddBuilding(scene, { 1500, 5100, 0 }, true);
+		const size_t storage = AddBuilding(scene, { 1500, -5100, 0 }, false);
+		const size_t n       = AddBuilding(scene, { 3000, 5100, 0 }, true);
+		const size_t z       = AddBuilding(scene, { 5100, 0, 0 }, true);
+		(void)src; (void)storage; (void)z;
+		scene.AddPathPoint({ { "RailSocket0", { 1500, 0, 0 } }, { "RailSocket1", { 1554, 0, 0 } },
+		                     { "RailSocket2", { 1500, 80, 0 } }, { "RailSocket3", { 1500, -80, 0 } } });
+		scene.AddPathPoint({ { "RailSocket0", { 3000, 0, 0 } }, { "RailSocket1", { 3054, 0, 0 } },
+		                     { "RailSocket2", { 3000, 80, 0 } } });
+		const size_t first  = AddRail(scene, { 100, 0, 0 }, { 1500, 0, 0 });
+		const size_t main   = AddRail(scene, { 1554, 0, 0 }, { 3000, 0, 0 });
+		const size_t last   = AddRail(scene, { 3054, 0, 0 }, { 5000, 0, 0 });
+		AddRail(scene, { 1500, 80, 0 }, { 1500, 5000, 0 });
+		AddRail(scene, { 1500, -80, 0 }, { 1500, -5000, 0 });
+		AddRail(scene, { 3000, 80, 0 }, { 3000, 5000, 0 });
+
+		Check(ConsumersOf(scene, first).empty(), "the stretch out of the crafter has no branch before it");
+		Check(ConsumersOf(scene, main) == std::set<size_t>{ m }, "after the first branch: crafter m, not the storage");
+		Check(ConsumersOf(scene, last) == std::set<size_t>{ m, n }, "after the second: m and n, not the crafter at the end");
 	}
 
 	// Ends of a path point the game has not spawned join within kJoinTolerance.
@@ -309,6 +345,7 @@ int main()
 	TestLanesStaySeparate();
 	TestJunctionStorageAndInputs();
 	TestLooseEnds();
+	TestConsumersBranchOffTheLine();
 	TestJunctionInsideDrill();
 	TestLaneTracksStayApart();
 	TestPlatform(dir);

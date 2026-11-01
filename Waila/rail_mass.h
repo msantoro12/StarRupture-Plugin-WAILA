@@ -14,18 +14,20 @@ namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; }
 // building the item comes from and the one it goes to.
 //
 // Every member of every Mass fragment and every struct stride comes from the
-// loader by name (ResolveField). Keys are declared as one feature, "rail
-// sources" (Waila::Features::RailSources), so a name the game no longer has
-// turns off the rail cards' sources and nothing else.
+// loader by name (ResolveField). Keys are declared as three features: "rail
+// sources" (Waila::Features::RailSources), "rail capacity" and "rail requests".
+// The last two list the same core keys, so a name the game no longer has turns
+// off only the figure it feeds: the sources, the max, or the now.
 namespace Waila::RailMass
 {
 	// A Mass entity, as the engine's FMassEntityHandle packs it: Index in the
 	// low half, SerialNumber in the high half. 0 is no entity.
 	using Entity = uint64_t;
 
-	// Declares the "rail sources" feature with every key the reader needs, and
-	// `alsoNeeds`, the keys of the parts it builds on (the building and item
-	// names it shows). Call first in OnPluginLoadHooks, with the other features.
+	// Declares the three features with every key the reader needs, and
+	// `alsoNeeds`, the keys of the parts the sources build on (the building and
+	// item names they show). Call first in OnPluginLoadHooks, with the other
+	// features.
 	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner, const std::vector<const char*>& alsoNeeds);
 
 	// Asks the loader for those keys. Call from OnPluginLoadHooks, after
@@ -33,8 +35,11 @@ namespace Waila::RailMass
 	// leaves the rest of WAILA running.
 	void Resolve(IPluginSelf* self, IPluginHookScanner* scanner);
 
-	// True when the feature is on, everything resolved and no read has faulted.
+	// True when the sources feature is on, everything resolved and no read has
+	// faulted. The capacity and the requests have their own gates on top of it.
 	bool Available();
+	bool CapacityAvailable();
+	bool RequestsAvailable();
 
 	// The rail's, or a building's, own Mass entity. 0 when it has none yet.
 	Entity EntityOf(SDK::AActor* actor);
@@ -73,4 +78,16 @@ namespace Waila::RailMass
 	// speed and spacing. A drone carries one item, so this holds for any item.
 	// Same rules as above; false leaves perMin as it was.
 	bool ReadCapacity(Entity rail, float& perMin);
+
+	// What a building has asked the drones to bring: the items of its open,
+	// not-aborted requests that bring an item to it (not those taking one away).
+	// `known` is false when the building has no request container.
+	struct Requests
+	{
+		bool                               known = false;
+		std::vector<SDK::UAuItemDataBase*> wanted;   // valid only in the tick it was read
+	};
+
+	// Same rules as above, gated by RequestsAvailable.
+	bool ReadRequests(Entity building, Requests& out);
 }

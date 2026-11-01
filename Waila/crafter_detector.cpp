@@ -19,29 +19,11 @@ namespace Waila
 {
 	namespace
 	{
-		// A recipe stores ingredients as item *classes*; everything worth showing
-		// (icon, display name, unique name) lives on the class default object.
-		UAuItemDataBase* ItemDefaultsOf(UClass* itemClass)
-		{
-			if (!itemClass)
-				return nullptr;
-
-			UObject* cdo = itemClass->ClassDefaultObject;
-			if (!cdo)
-				return nullptr;
-
-			bool isItem = false;
-			try { isItem = cdo->IsA(UAuItemDataBase::StaticClass()); }
-			catch (...) { return nullptr; }
-
-			return isItem ? static_cast<UAuItemDataBase*>(cdo) : nullptr;
-		}
-
 		void FillEntry(RecipeItemEntry& entry, UClass* itemClass, int32_t count)
 		{
 			entry.itemClass = itemClass;
 			entry.need      = count;
-			entry.itemData  = ItemDefaultsOf(itemClass);
+			entry.itemData  = Fields::ItemDefaultsOf(itemClass);
 
 			if (entry.itemData)
 				entry.displayName = Fields::DisplayNameOf(entry.itemData);

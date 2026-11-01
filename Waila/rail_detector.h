@@ -14,8 +14,9 @@ namespace Waila
 	{
 		SDK::UAuItemDataBase* itemData = nullptr;
 		std::string           displayName;
-		float                 perMinNow = -1.0f;   // what the running sources make now
-		float                 perMinMax = -1.0f;   // the most the rail itself can carry
+		float                 perMinMax = -1.0f;   // the sources' output, capped by what the rail carries
+		float                 perMinMin = -1.0f;   // what is left if every machine ahead takes its full share
+		float                 perMinNow = -1.0f;   // what is left given the machines asking for it now
 	};
 
 	// One building at an end of the rail's traffic: where an item comes from or
