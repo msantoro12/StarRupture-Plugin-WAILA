@@ -190,6 +190,10 @@ namespace Waila
 			}
 		}
 
+		float outRate = 0.0f;
+		if (activeRecipe && CountRate(activeRecipe, outInfo.recipeOutputCount, outInfo.craftingSpeed, outRate))
+			outInfo.outputPerMin = outRate;
+
 		// What each ingredient costs a minute, once the live speed is known.
 		for (RecipeItemEntry& entry : outInfo.recipeInputs)
 		{

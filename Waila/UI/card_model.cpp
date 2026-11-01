@@ -182,7 +182,7 @@ namespace Waila::UI
 
 		if (info.recipeBuildTime > 0.0f)
 		{
-			const float perMinute = (60.0f / info.recipeBuildTime) * static_cast<float>(info.recipeOutputCount);
+			const float perMinute = info.outputPerMin > 0.0f ? info.outputPerMin : 0.0f;
 
 			char num[24];
 			Draw::FormatNumber(num, sizeof(num), out.status == Health::Bad ? 0.0f : perMinute);
