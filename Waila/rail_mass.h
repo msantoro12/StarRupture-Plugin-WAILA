@@ -68,4 +68,9 @@ namespace Waila::RailMass
 	// a fault turns the reader off for the rest of the session.
 	bool Observe(Entity rail, Observation& out);
 	bool ReadCrafter(Entity building, CrafterState& out);
+
+	// The most items a minute the rail's lane lets through, from the lane's own
+	// speed and spacing. A drone carries one item, so this holds for any item.
+	// Same rules as above; false leaves perMin as it was.
+	bool ReadCapacity(Entity rail, float& perMin);
 }

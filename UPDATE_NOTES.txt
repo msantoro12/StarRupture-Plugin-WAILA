@@ -1,4 +1,6 @@
-Drone rails show the crafters that feed them, summed per item as items per minute (now and at full speed)
+Drone rails show the crafters that feed them, summed per item as items per minute: now, and max, the most the rail can carry at its drone speed and spacing
+An item row turns amber when its sources make more than the rail can carry
+A rail card shows six rows in all, item rows first
 Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track, and through storage to the crafters filling it
 Each rail on a platform shows its own sources; a factory's input rails no longer show the factory they feed
 A lane's tracks stay apart even before the lane has loaded. Buildings that have not loaded do not count

@@ -10,6 +10,7 @@
 #include "AuCrafting_classes.hpp"
 
 #include <windows.h>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -21,7 +22,10 @@ using namespace SDK;
 //     register. Its size is still asked of the loader (kHandleSize).
 //   - TArray: data pointer, then Num as int32 (RawArray).
 //   - TSharedPtr: the object pointer is its first word (the entity manager).
-//   - The calling convention and argument order of the three Mass functions.
+//   - A const shared fragment: FConstSharedStruct's first word points at an
+//     FStructSharedMemory, whose first word is the struct type; the data
+//     follows, aligned to the type's MinAlignment.
+//   - The calling convention and argument order of the Mass functions.
 // Everything else (every fragment member, every struct size and array stride)
 // is asked of the loader by name.
 
@@ -37,6 +41,7 @@ namespace Waila::RailMass
 		using GetFragmentFn  = void* (__fastcall*)(const void* manager, Handle entity, const UScriptStruct* type);
 		using EntityCheckFn  = bool  (__fastcall*)(const void* manager, Handle entity);
 		using GetHandleFn    = Handle* (__fastcall*)(void* persistentId, Handle* out, const UObject* worldContext);
+		using GetSharedFn    = const void* (__fastcall*)(const void* manager, Handle entity, const UScriptStruct* type);
 
 		// The Mass functions, by the names the loader's map would use.
 		constexpr const char* kKeyGetSubsystem = "UWorld::GetSubsystem<UMassEntitySubsystem>";
@@ -44,6 +49,7 @@ namespace Waila::RailMass
 		constexpr const char* kKeyIsValid      = "FMassEntityManager::IsEntityValid";
 		constexpr const char* kKeyIsBuilt      = "FMassEntityManager::IsEntityBuilt";
 		constexpr const char* kKeyGetHandle    = "FCrMassPersistentEntityID::GetHandle";
+		constexpr const char* kKeyGetShared    = "FMassEntityManager::InternalGetConstSharedFragmentPtr";
 
 		// Call sites and function starts in CL-127004, each unique there. The
 		// call-site patterns follow the E8 at the offset below to the function.
@@ -58,6 +64,12 @@ namespace Waila::RailMass
 			"48 85 C0 0F 84 ?? ?? ?? ?? 0F 10 48 20 66 41 0F 2F 4D 30 "
 			"0F 10 40 30 0F 11 4D EF F2 0F 11 45 FF";
 		constexpr int32_t kAtGetFragment = 0x0E;
+
+		constexpr const char* kPatGetShared =
+			"E8 ?? ?? ?? ?? 4C 8B C0 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 74 ?? "
+			"48 8B 10 48 85 D2 74 ?? 48 8B 02 48 0F BF 48 5C 48 8D 41 07 48 F7 D9 48 03 C2 48 23 C1 74 ?? "
+			"F3 0F 10 00 48 8B 4D 6F F3 0F 58 01 F3 0F 11 01";
+		constexpr int32_t kAtGetShared = 0x0E;
 
 		// IsEntityBuilt is the function start the pattern matches; IsEntityValid
 		// is the call 21 bytes in.
@@ -78,6 +90,7 @@ namespace Waila::RailMass
 		EntityCheckFn  g_isValid      = nullptr;
 		EntityCheckFn  g_isBuilt      = nullptr;
 		GetHandleFn    g_getHandle    = nullptr;
+		GetSharedFn    g_getShared    = nullptr;
 
 		// A struct's size on the running build, asked by its name. The row's
 		// size is filled in by Resolve; 0 means it did not resolve.
@@ -148,15 +161,24 @@ namespace Waila::RailMass
 		Member mMissingItems   = RAIL_MEMBER(FCrCraftingFragment, bIsMissingItems, nullptr, kBool);
 		Member mOutputFull     = RAIL_MEMBER(FCrCraftingFragment, bOutputFull, nullptr, kBool);
 
+		// A lane's speed and spacing: its own parameters, whether a route starts
+		// on it, and the drone settings' gap for joining it.
+		Member mLineMoveSpeed  = RAIL_MEMBER(FCrLogisticsLineParameters, MoveSpeed, nullptr, kFloat);
+		Member mLineSlotLength = RAIL_MEMBER(FCrLogisticsLineParameters, SlotLength, nullptr, kFloat);
+		Member mIsStartLine    = RAIL_MEMBER(FCrLogisticsLineFragment, bIsStartLine, nullptr, kBool);
+		Member mHalfSlotLength = RAIL_MEMBER(UDronesDeveloperSettings, HalfRailSlotLengthDefault, nullptr, kFloat);
+
 		Member* const kMembers[] = {
 			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
 			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
 			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
-			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
+			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull, &mLineMoveSpeed,
+			&mLineSlotLength, &mIsStartLine, &mHalfSlotLength,
 		};
 
-		// The three fragments' reflection objects, found by name on first use.
+		// The fragments' reflection objects, found by name on first use.
 		const UScriptStruct* g_lineStruct     = nullptr;
+		const UScriptStruct* g_paramsStruct   = nullptr;
 		const UScriptStruct* g_agentStruct    = nullptr;
 		const UScriptStruct* g_requestStruct  = nullptr;
 		const UScriptStruct* g_craftingStruct = nullptr;
@@ -246,7 +268,8 @@ namespace Waila::RailMass
 			if (!g_agentStruct)    g_agentStruct    = FindStruct("CrLogisticsAgentFragment");
 			if (!g_requestStruct)  g_requestStruct  = FindStruct("CrLogisticsRequestFragment");
 			if (!g_craftingStruct) g_craftingStruct = FindStruct("CrCraftingFragment");
-			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct;
+			if (!g_paramsStruct)   g_paramsStruct   = FindStruct("CrLogisticsLineParameters");
+			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct && g_paramsStruct;
 		}
 
 		const void* Manager(const UWorld* world)
@@ -358,6 +381,54 @@ namespace Waila::RailMass
 			out.stalled = ReadAt<bool>(fragment, mMissingItems.Offset()) || ReadAt<bool>(fragment, mOutputFull.Offset());
 		}
 
+		// A built, current entity's const shared fragment, or null. The address
+		// is worked out the way the game's GetConstSharedFragmentDataPtr does.
+		const uint8_t* SharedFragment(const void* manager, Entity entity, const UScriptStruct* type)
+		{
+			if (!entity || !type)
+				return nullptr;
+			const Handle h = ToHandle(entity);
+			if (!g_isValid(manager, h) || !g_isBuilt(manager, h))
+				return nullptr;
+			const auto* shared = static_cast<const uint8_t* const*>(g_getShared(manager, h, type));
+			const uint8_t* memory = shared ? *shared : nullptr;
+			const auto* memoryType = memory ? ReadAt<const UStruct*>(memory, 0) : nullptr;
+			if (!memoryType || memoryType->MinAlignment <= 0)
+				return nullptr;
+			const uintptr_t align = static_cast<uintptr_t>(memoryType->MinAlignment);
+			return reinterpret_cast<const uint8_t*>(
+				(reinterpret_cast<uintptr_t>(memory) + sizeof(void*) - 1 + align) & ~(align - 1));
+		}
+
+		// The lane's throughput, the way UCrLogisticsLineSimulateMovementProcessor
+		// moves drones along it. Each tick a drone moves MoveSpeed x dt and stops
+		// SlotLength behind the drone ahead. A waiting drone joins once the space
+		// left at the start (the lane's length, less the last drone's distance and
+		// half a SlotLength, or nothing on a start lane) reaches the settings'
+		// HalfRailSlotLengthDefault. So drones run no closer than the larger of
+		// the two gaps, and a drone carries one item.
+		void ReadCapacityImpl(Entity rail, float& perMin)
+		{
+			if (!FindStructs())
+				return;
+			const void* manager = Manager(PluginSdkRuntime::GetWorld());
+			const uint8_t* line   = manager ? Fragment(manager, rail, g_lineStruct) : nullptr;
+			const uint8_t* params = line ? SharedFragment(manager, rail, g_paramsStruct) : nullptr;
+			const auto* settings  = reinterpret_cast<const uint8_t*>(UDronesDeveloperSettings::GetDefaultObj());
+			if (!params || !settings)
+				return;
+
+			const float speed     = ReadAt<float>(params, mLineMoveSpeed.Offset());
+			const float slot      = ReadAt<float>(params, mLineSlotLength.Offset());
+			const float joinSpace = ReadAt<float>(settings, mHalfSlotLength.Offset());
+			const bool  startLine = ReadAt<bool>(line, mIsStartLine.Offset());
+
+			const float joinGap = (startLine ? 0.0f : 0.5f * slot) + joinSpace;
+			const float gap     = slot > joinGap ? slot : joinGap;
+			if (speed > 0.0f && gap > 0.0f && std::isfinite(speed / gap))
+				perMin = speed / gap * 60.0f;
+		}
+
 		// A bad pointer in the game's data must not take the game down.
 		template <class Fn>
 		bool Guarded(Fn&& fn)
@@ -404,6 +475,7 @@ namespace Waila::RailMass
 		keys.push_back(kKeyIsValid);
 		keys.push_back(kKeyIsBuilt);
 		keys.push_back(kKeyGetHandle);
+		keys.push_back(kKeyGetShared);
 		keys.insert(keys.end(), alsoNeeds.begin(), alsoNeeds.end());
 		return PluginMap::DeclareFeatures(scanner, self, g_feature);
 	}
@@ -433,13 +505,15 @@ namespace Waila::RailMass
 		const uintptr_t isValid      = ResolveFunction(scanner, self, kKeyIsValid, kPatIsBuilt, kAtIsValid);
 		const uintptr_t isBuilt      = ResolveFunction(scanner, self, kKeyIsBuilt, kPatIsBuilt, -1);
 		const uintptr_t getHandle    = ResolveFunction(scanner, self, kKeyGetHandle, kPatGetHandle, -1);
+		const uintptr_t getShared    = ResolveFunction(scanner, self, kKeyGetShared, kPatGetShared, kAtGetShared);
 		g_getSubsystem = reinterpret_cast<GetSubsystemFn>(getSubsystem);
 		g_getFragment  = reinterpret_cast<GetFragmentFn>(getFragment);
 		g_isValid      = reinterpret_cast<EntityCheckFn>(isValid);
 		g_isBuilt      = reinterpret_cast<EntityCheckFn>(isBuilt);
 		g_getHandle    = reinterpret_cast<GetHandleFn>(getHandle);
+		g_getShared    = reinterpret_cast<GetSharedFn>(getShared);
 
-		g_resolved = all && getSubsystem && getFragment && isValid && isBuilt && getHandle;
+		g_resolved = all && getSubsystem && getFragment && isValid && isBuilt && getHandle && getShared;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
 	}
@@ -447,7 +521,8 @@ namespace Waila::RailMass
 	bool Available()
 	{
 		return g_resolved && g_feature.On() && !g_faulted
-			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && Fields::HelperEntity.offset >= 0;
+			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && g_getShared
+			&& Fields::HelperEntity.offset >= 0;
 	}
 
 	Entity EntityOf(AActor* actor)
@@ -473,5 +548,12 @@ namespace Waila::RailMass
 		if (!Available())
 			return false;
 		return Guarded([&] { ReadCrafterImpl(building, out); });
+	}
+
+	bool ReadCapacity(Entity rail, float& perMin)
+	{
+		if (!Available())
+			return false;
+		return Guarded([&] { ReadCapacityImpl(rail, perMin); });
 	}
 }

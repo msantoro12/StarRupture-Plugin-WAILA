@@ -14,12 +14,12 @@ namespace Waila
 	{
 		SDK::UAuItemDataBase* itemData = nullptr;
 		std::string           displayName;
-		float                 perMinNow = -1.0f;
-		float                 perMinMax = -1.0f;
+		float                 perMinNow = -1.0f;   // what the running sources make now
+		float                 perMinMax = -1.0f;   // the most the rail itself can carry
 	};
 
 	// One building at an end of the rail's traffic: where an item comes from or
-	// goes to. Rates are items per minute, negative when not known or not a crafter.
+	// goes to. The rate is items per minute, negative when not known or not a crafter.
 	struct RailPeerEntry
 	{
 		bool                  source = false;   // false: the item goes there
@@ -27,7 +27,6 @@ namespace Waila
 		SDK::UAuItemDataBase* itemData = nullptr;
 		std::string           itemName;
 		float                 perMinNow = -1.0f;
-		float                 perMinMax = -1.0f;
 	};
 
 	struct RailInfo

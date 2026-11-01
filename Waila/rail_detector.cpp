@@ -40,11 +40,10 @@ namespace Waila
 			FWeakObjectPtr item;
 			std::string    uniqueName;
 			std::string    displayName;
-			int32_t        sources   = 0;
-			float          nowPerMin = 0.0f;
-			float          maxPerMin = 0.0f;
-			bool           maxKnown  = true;   // false once any source's full rate could not be read
-			bool           nowKnown  = true;   // false once any source's state could not be read
+			int32_t        sources    = 0;
+			float          nowPerMin  = 0.0f;
+			float          fullPerMin = 0.0f;   // with every source running; orders the list
+			bool           nowKnown   = true;   // false once any source's rate or state could not be read
 		};
 
 		// Everything the card shows for one rail, kept between refreshes. Item data
@@ -278,12 +277,11 @@ namespace Waila
 
 				if (!readable)
 				{
-					t.maxKnown = false;
 					t.nowKnown = false;
 					continue;
 				}
 
-				t.maxPerMin += full;
+				t.fullPerMin += full;
 
 				bool stateKnown = false;
 				if (CrafterRunning(crafter, stateKnown))
@@ -311,7 +309,6 @@ namespace Waila
 			std::string      itemDisplay;
 			std::string      buildingName;   // empty until the building is loaded once
 			float            perMinNow = -1.0f;
-			float            perMinMax = -1.0f;
 		};
 
 		struct MassCache
@@ -320,6 +317,7 @@ namespace Waila
 			std::chrono::steady_clock::time_point stamp{};
 			bool                                  railFound = false;
 			int32_t                               drones    = 0;
+			float                                 capacity  = -1.0f;   // items a minute; negative when unread
 			std::vector<MassPeer>                 peers;
 		};
 
@@ -347,7 +345,7 @@ namespace Waila
 		// A crafter's rate for the item the rail moves: only when it makes that item.
 		void RateOf(MassPeer& peer)
 		{
-			peer.perMinNow = peer.perMinMax = -1.0f;
+			peer.perMinNow = -1.0f;
 			RailMass::CrafterState crafter;
 			if (!Features::Crafters.On() || !RailMass::ReadCrafter(peer.entity, crafter) || !crafter.recipe)
 				return;
@@ -357,7 +355,6 @@ namespace Waila
 			if (!made || Fields::UniqueNameOf(made) != peer.itemUnique
 				|| !RecipeRate(crafter.recipe, 0, crafter.speed, full))
 				return;
-			peer.perMinMax = full;
 			peer.perMinNow = crafter.stalled ? 0.0f : full;
 		}
 
@@ -394,6 +391,7 @@ namespace Waila
 				cache.railFound = seen.railFound;
 				cache.drones    = seen.drones;
 				Merge(cache, seen);
+				RailMass::ReadCapacity(entity, cache.capacity);
 			}
 
 			std::unordered_map<RailMass::Entity, std::string> names;
@@ -479,7 +477,6 @@ namespace Waila
 				entry.buildingName = peer.buildingName.empty() ? "Out of range" : peer.buildingName;
 				entry.itemName     = peer.itemDisplay;
 				entry.perMinNow    = peer.perMinNow;
-				entry.perMinMax    = peer.perMinMax;
 
 				// A dead item just loses its icon.
 				UObject* obj = peer.item.Get();
@@ -527,10 +524,13 @@ namespace Waila
 
 			// Biggest flows first, so a cut-off list drops the smallest.
 			std::stable_sort(g_cache.tallies.begin(), g_cache.tallies.end(),
-				[](const Tally& a, const Tally& b) { return a.maxPerMin > b.maxPerMin; });
+				[](const Tally& a, const Tally& b) { return a.fullPerMin > b.fullPerMin; });
 		}
 
 		outInfo.truncated = g_cache.truncated;
+
+		// A drone carries one item, so the rail's capacity is the same for each.
+		const float capacity = Features::ShowRailSources() && g_massCache.rail == actor ? g_massCache.capacity : -1.0f;
 
 		// A filtered rail only carries that item.
 		for (const Tally& t : g_cache.tallies)
@@ -548,9 +548,8 @@ namespace Waila
 			if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 				entry.itemData = static_cast<UAuItemDataBase*>(obj);
 
-			if (t.maxKnown)
-				entry.perMinMax = t.maxPerMin;
-			if (t.maxKnown && t.nowKnown)
+			entry.perMinMax = capacity;
+			if (t.nowKnown)
 				entry.perMinNow = t.nowPerMin;
 			outInfo.rates.push_back(std::move(entry));
 		}

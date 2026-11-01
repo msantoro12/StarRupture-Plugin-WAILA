@@ -289,7 +289,8 @@ namespace Waila::UI
 
 	namespace
 	{
-		// Past this the list stops being a glance.
+		// Past this the list stops being a glance: item rows and From/To rows
+		// together, like the stock slots on a container.
 		constexpr size_t kMaxRateRows = 6;
 
 		std::string PerMin(float v)
@@ -310,30 +311,31 @@ namespace Waila::UI
 	namespace
 	{
 		// Where the rail's items come from, then where they go, under the item
-		// rates. A crafter shows its rate for the item; storage and stations have
-		// none, so those columns stay blank. Returns the rows left out.
+		// rates, in the rows left. A crafter shows what it makes now; storage and
+		// stations have no rate, and max is the rail's, so those stay blank.
+		// Returns the rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
 		{
-			for (size_t i = 0; i < info.peers.size() && i < kMaxRateRows; ++i)
+			size_t shown = 0;
+			for (const Waila::RailPeerEntry& p : info.peers)
 			{
-				const Waila::RailPeerEntry& p = info.peers[i];
+				if (out.rates.size() >= kMaxRateRows)
+					break;
 
 				RateRow row;
 				row.icon = Icons::ForItem(p.itemData);
 				row.name = (p.source ? "From " : "To ") + p.buildingName
 					+ (p.itemName.empty() ? std::string() : ": " + p.itemName);
-				if (p.perMinMax >= 0.0f)
+				if (p.perMinNow >= 0.0f)
 				{
 					row.now = PerMin(p.perMinNow);
-					row.max = PerMin(p.perMinMax);
 					if (p.perMinNow <= 0.0f)
 						row.tone = Health::Bad;
-					else if (p.perMinNow < p.perMinMax * 0.999f)
-						row.tone = Health::Warn;
 				}
 				out.rates.push_back(std::move(row));
+				++shown;
 			}
-			return info.peers.size() > kMaxRateRows ? info.peers.size() - kMaxRateRows : 0;
+			return info.peers.size() - shown;
 		}
 	}
 
@@ -354,13 +356,12 @@ namespace Waila::UI
 			row.now  = PerMin(r.perMinNow);
 			row.max  = PerMin(r.perMinMax);
 
-			if (r.perMinNow >= 0.0f && r.perMinMax > 0.0f)
-			{
-				if (r.perMinNow <= 0.0f)
-					row.tone = Health::Bad;
-				else if (r.perMinNow < r.perMinMax * 0.999f)
-					row.tone = Health::Warn;
-			}
+			// Red when nothing is being made, amber when more is made than the
+			// rail can carry.
+			if (r.perMinNow == 0.0f)
+				row.tone = Health::Bad;
+			else if (r.perMinMax > 0.0f && r.perMinNow > r.perMinMax * 1.001f)
+				row.tone = Health::Warn;
 			out.rates.push_back(std::move(row));
 		}
 		size_t more = info.rates.size() > kMaxRateRows ? info.rates.size() - kMaxRateRows : 0;
