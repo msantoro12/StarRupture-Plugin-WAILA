@@ -44,9 +44,9 @@ namespace Waila
 		std::vector<RailRateEntry> rates;
 
 		// From the game's own Mass data (rail_mass.h): the buildings the rail's
-		// items come from and go to, loaded or not. When false, `rates` holds the
-		// geometric guess instead.
+		// items come from and go to, loaded or not, shown under `rates`.
 		bool                       fromMass = false;
+		int32_t                    fromCount = 0;
 		int32_t                    destCount = 0;
 		std::vector<RailPeerEntry> peers;     // sources first
 		std::string                note;      // stands in when there is nothing to list

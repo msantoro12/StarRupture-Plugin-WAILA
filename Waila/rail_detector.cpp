@@ -453,19 +453,18 @@ namespace Waila
 		// rail's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
 
+		// The rail's ends from the Mass data, listed under the item rates below.
 		if (Features::ShowRailSources())
 		{
 			if (g_massCache.rail != actor || now - g_massCache.stamp >= kRefresh)
 			{
 				UWorld* world = PluginSdkRuntime::GetWorld();
-				if (!world)
-					return true;
-
 				if (g_massCache.rail != actor)
 					g_massCache = MassCache{};
 				g_massCache.rail  = actor;
 				g_massCache.stamp = now;
-				RefreshMass(actor, world, g_massCache);
+				if (world)
+					RefreshMass(actor, world, g_massCache);
 			}
 
 			outInfo.fromMass = true;
@@ -487,7 +486,7 @@ namespace Waila
 				if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 					entry.itemData = static_cast<UAuItemDataBase*>(obj);
 
-				++(peer.source ? outInfo.sourceCount : outInfo.destCount);
+				++(peer.source ? outInfo.fromCount : outInfo.destCount);
 				outInfo.peers.push_back(std::move(entry));
 			}
 			// Sources first.
@@ -496,8 +495,10 @@ namespace Waila
 
 			if (outInfo.peers.empty())
 				outInfo.note = g_massCache.railFound ? "No cargo moving" : "Rail data not available";
-			return true;
 		}
+
+		if (!Features::ShowDroneRails())
+			return true;
 
 		if (g_cache.rail != actor || now - g_cache.stamp >= kRefresh)
 		{

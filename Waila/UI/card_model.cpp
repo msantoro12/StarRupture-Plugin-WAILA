@@ -309,9 +309,10 @@ namespace Waila::UI
 
 	namespace
 	{
-		// The rail's sources, then where its items go. A crafter shows its rate
-		// for the item; storage and stations have none, so those columns stay blank.
-		void FromRailPeers(const Waila::RailInfo& info, CardModel& out)
+		// Where the rail's items come from, then where they go, under the item
+		// rates. A crafter shows its rate for the item; storage and stations have
+		// none, so those columns stay blank. Returns the rows left out.
+		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
 		{
 			for (size_t i = 0; i < info.peers.size() && i < kMaxRateRows; ++i)
 			{
@@ -332,23 +333,7 @@ namespace Waila::UI
 				}
 				out.rates.push_back(std::move(row));
 			}
-
-			if (out.rates.empty())
-				out.ratesNote = info.note.empty() ? "No cargo moving" : info.note;
-
-			char buf[48];
-			if (!info.peers.empty())
-			{
-				snprintf(buf, sizeof(buf), "%d from, %d to", info.sourceCount, info.destCount);
-				out.statusText = buf;
-			}
-
-			out.footLeft = "items / min: now, max";
-			if (info.peers.size() > kMaxRateRows)
-			{
-				snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(info.peers.size() - kMaxRateRows));
-				out.footRight = buf;
-			}
+			return info.peers.size() > kMaxRateRows ? info.peers.size() - kMaxRateRows : 0;
 		}
 	}
 
@@ -358,12 +343,6 @@ namespace Waila::UI
 
 		out.hasRates = true;
 		out.chip     = info.filterName;
-
-		if (info.fromMass)
-		{
-			FromRailPeers(info, out);
-			return;
-		}
 
 		for (size_t i = 0; i < info.rates.size() && i < kMaxRateRows; ++i)
 		{
@@ -384,12 +363,20 @@ namespace Waila::UI
 			}
 			out.rates.push_back(std::move(row));
 		}
+		size_t more = info.rates.size() > kMaxRateRows ? info.rates.size() - kMaxRateRows : 0;
+		if (info.fromMass)
+			more += AddRailPeers(info, out);
 
 		if (out.rates.empty())
-			out.ratesNote = "No sources found";
+			out.ratesNote = info.fromMass && !info.note.empty() ? info.note : "No sources found";
 
-		char buf[32];
-		if (info.sourceCount > 0)
+		char buf[48];
+		if (!info.peers.empty())
+		{
+			snprintf(buf, sizeof(buf), "%d from, %d to", info.fromCount, info.destCount);
+			out.statusText = buf;
+		}
+		else if (info.sourceCount > 0)
 		{
 			snprintf(buf, sizeof(buf), "%d source%s%s", info.sourceCount,
 				info.sourceCount == 1 ? "" : "s", info.truncated ? "+" : "");
@@ -397,9 +384,9 @@ namespace Waila::UI
 		}
 
 		out.footLeft = "items / min: now, max";
-		if (info.rates.size() > kMaxRateRows)
+		if (more > 0)
 		{
-			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(info.rates.size() - kMaxRateRows));
+			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
 			out.footRight = buf;
 		}
 	}

@@ -36,12 +36,14 @@ namespace Waila::RailMass
 		using GetSubsystemFn = void* (__fastcall*)(const UWorld*);
 		using GetFragmentFn  = void* (__fastcall*)(const void* manager, Handle entity, const UScriptStruct* type);
 		using EntityCheckFn  = bool  (__fastcall*)(const void* manager, Handle entity);
+		using GetHandleFn    = Handle* (__fastcall*)(void* persistentId, Handle* out, const UObject* worldContext);
 
-		// The three functions, by the names the loader's map would use.
+		// The Mass functions, by the names the loader's map would use.
 		constexpr const char* kKeyGetSubsystem = "UWorld::GetSubsystem<UMassEntitySubsystem>";
 		constexpr const char* kKeyGetFragment  = "FMassEntityManager::InternalGetFragmentDataPtr";
 		constexpr const char* kKeyIsValid      = "FMassEntityManager::IsEntityValid";
 		constexpr const char* kKeyIsBuilt      = "FMassEntityManager::IsEntityBuilt";
+		constexpr const char* kKeyGetHandle    = "FCrMassPersistentEntityID::GetHandle";
 
 		// Call sites and function starts in CL-127004, each unique there. The
 		// call-site patterns follow the E8 at the offset below to the function.
@@ -65,10 +67,17 @@ namespace Waila::RailMass
 			"41 B8 45 07 00 00 48 0F 44 C1 4C 8D 0D ?? ?? ?? ?? 48 89 44 24 30 48 8D 15 ?? ?? ?? ??";
 		constexpr int32_t kAtIsValid = 21;
 
+		// The function start. It returns the cached handle when both its halves
+		// are set; otherwise it looks the ID up in the world's persistent ID
+		// subsystem and caches the result in the ID it was called on.
+		constexpr const char* kPatGetHandle =
+			"48 89 5C 24 08 57 48 83 EC 30 83 39 FF 49 8B C0 48 8B DA 48 8B F9 74 ?? 48 85 C0 75 ??";
+
 		GetSubsystemFn g_getSubsystem = nullptr;
 		GetFragmentFn  g_getFragment  = nullptr;
 		EntityCheckFn  g_isValid      = nullptr;
 		EntityCheckFn  g_isBuilt      = nullptr;
+		GetHandleFn    g_getHandle    = nullptr;
 
 		// A struct's size on the running build, asked by its name. The row's
 		// size is filled in by Resolve; 0 means it did not resolve.
@@ -110,7 +119,6 @@ namespace Waila::RailMass
 		// An actor's Mass component, and the entity the component made.
 		Member mMassComponent  = RAIL_MEMBER(ACrBuildingActorBase, MassActorComponent, nullptr, kPtr);
 		Member mEntityHandle   = RAIL_MEMBER(UCrMassActorComponent, EntityHandle, &kHandleSize, 0);
-		Member mCachedHandle   = RAIL_MEMBER(FCrMassPersistentEntityID, CachedHandle, &kHandleSize, 0);
 
 		// A rail's lane: the drones on it.
 		Member mLineState      = RAIL_MEMBER(FCrLogisticsLineFragment, State, &kLineStateSize, 0);
@@ -141,7 +149,7 @@ namespace Waila::RailMass
 		Member mOutputFull     = RAIL_MEMBER(FCrCraftingFragment, bOutputFull, nullptr, kBool);
 
 		Member* const kMembers[] = {
-			&mMassComponent, &mEntityHandle, &mCachedHandle, &mLineState, &mOrderedItems, &mWaitingItems,
+			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
 			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
 			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
 			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
@@ -204,11 +212,19 @@ namespace Waila::RailMass
 			return value;
 		}
 
-		// A persistent id's cached handle; 0 when the id was never resolved.
-		Entity CachedOf(const uint8_t* persistentId)
+		// A persistent id's entity, resolved the way the game resolves it. Its
+		// cached handle is transient and stays empty until the game asks for that
+		// copy of the id, so most ids in the Mass data have none. The lookup runs
+		// on a copy, so the game's data is left as it was. 0 = no entity.
+		Entity HandleOf(const uint8_t* persistentId, const UWorld* world)
 		{
-			const Entity e = ReadAt<Entity>(persistentId, mCachedHandle.Offset());
-			return ToHandle(e).index > 0 ? e : 0;
+			uint8_t copy[32]{};
+			if (!world || kPersistentSize.size > sizeof(copy))
+				return 0;
+			std::memcpy(copy, persistentId, kPersistentSize.size);
+			Handle h{};
+			g_getHandle(copy, &h, world);
+			return h.index > 0 ? ToEntity(h) : 0;
 		}
 
 		RawArray ArrayAt(const uint8_t* base, int32_t offset)
@@ -233,9 +249,8 @@ namespace Waila::RailMass
 			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct;
 		}
 
-		const void* Manager()
+		const void* Manager(const UWorld* world)
 		{
-			UWorld* world = PluginSdkRuntime::GetWorld();
 			if (!world)
 				return nullptr;
 			const uint8_t* subsystem = static_cast<const uint8_t*>(g_getSubsystem(world));
@@ -260,13 +275,13 @@ namespace Waila::RailMass
 		}
 
 		void AddDrones(const uint8_t* state, int32_t arrayOffset, uint32_t stride, int32_t entityOffset,
-			std::vector<Entity>& drones)
+			const UWorld* world, std::vector<Entity>& drones)
 		{
 			const RawArray items = ArrayAt(state, arrayOffset);
 			for (int32_t i = 0; i < items.num; ++i)
 			{
 				const uint8_t* element = items.data + static_cast<size_t>(i) * stride;
-				const Entity drone = CachedOf(element + entityOffset + Fields::HelperEntity.offset);
+				const Entity drone = HandleOf(element + entityOffset + Fields::HelperEntity.offset, world);
 				if (drone && drones.size() < kMaxPeers)
 					drones.push_back(drone);
 			}
@@ -276,7 +291,8 @@ namespace Waila::RailMass
 		{
 			if (!FindStructs())
 				return;
-			const void* manager = Manager();
+			const UWorld* world = PluginSdkRuntime::GetWorld();
+			const void* manager = Manager(world);
 			const uint8_t* line = manager ? Fragment(manager, rail, g_lineStruct) : nullptr;
 			if (!line)
 				return;
@@ -284,8 +300,8 @@ namespace Waila::RailMass
 
 			std::vector<Entity> drones;
 			const uint8_t* state = line + mLineState.Offset();
-			AddDrones(state, mOrderedItems.Offset(), kLineItemSize.size, mLineItemEntity.Offset(), drones);
-			AddDrones(state, mWaitingItems.Offset(), kWaitingSize.size, mWaitingEntity.Offset(), drones);
+			AddDrones(state, mOrderedItems.Offset(), kLineItemSize.size, mLineItemEntity.Offset(), world, drones);
+			AddDrones(state, mWaitingItems.Offset(), kWaitingSize.size, mWaitingEntity.Offset(), world, drones);
 
 			for (Entity drone : drones)
 			{
@@ -294,7 +310,7 @@ namespace Waila::RailMass
 					continue;
 				++out.drones;
 
-				const Entity requestEntity = CachedOf(agent + mRequestUId.Offset());
+				const Entity requestEntity = HandleOf(agent + mRequestUId.Offset(), world);
 				const uint8_t* request = Fragment(manager, requestEntity, g_requestStruct);
 				if (!request)
 					continue;
@@ -312,10 +328,10 @@ namespace Waila::RailMass
 					const uint8_t* entry = runtime.data + static_cast<size_t>(i) * kRuntimeSize.size;
 					// A request can serve several drones; the entry that names this
 					// one is its own. A request with a single entry is this drone's.
-					if (runtime.num > 1 && CachedOf(entry + mRuntimeAgent.Offset()) != drone)
+					if (runtime.num > 1 && HandleOf(entry + mRuntimeAgent.Offset(), world) != drone)
 						continue;
-					const Entity source = CachedOf(entry + mItemSource.Offset());
-					const Entity dest   = CachedOf(entry + mItemDest.Offset());
+					const Entity source = HandleOf(entry + mItemSource.Offset(), world);
+					const Entity dest   = HandleOf(entry + mItemDest.Offset(), world);
 					if (source && out.peers.size() < kMaxPeers)
 						out.peers.push_back(Peer{ source, true, item });
 					if (dest && out.peers.size() < kMaxPeers)
@@ -328,7 +344,7 @@ namespace Waila::RailMass
 		{
 			if (!FindStructs())
 				return;
-			const void* manager = Manager();
+			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* fragment = manager ? Fragment(manager, building, g_craftingStruct) : nullptr;
 			if (!fragment)
 				return;
@@ -387,6 +403,7 @@ namespace Waila::RailMass
 		keys.push_back(kKeyGetFragment);
 		keys.push_back(kKeyIsValid);
 		keys.push_back(kKeyIsBuilt);
+		keys.push_back(kKeyGetHandle);
 		keys.insert(keys.end(), alsoNeeds.begin(), alsoNeeds.end());
 		return PluginMap::DeclareFeatures(scanner, self, g_feature);
 	}
@@ -415,12 +432,14 @@ namespace Waila::RailMass
 		const uintptr_t getFragment  = ResolveFunction(scanner, self, kKeyGetFragment, kPatGetFragment, kAtGetFragment);
 		const uintptr_t isValid      = ResolveFunction(scanner, self, kKeyIsValid, kPatIsBuilt, kAtIsValid);
 		const uintptr_t isBuilt      = ResolveFunction(scanner, self, kKeyIsBuilt, kPatIsBuilt, -1);
+		const uintptr_t getHandle    = ResolveFunction(scanner, self, kKeyGetHandle, kPatGetHandle, -1);
 		g_getSubsystem = reinterpret_cast<GetSubsystemFn>(getSubsystem);
 		g_getFragment  = reinterpret_cast<GetFragmentFn>(getFragment);
 		g_isValid      = reinterpret_cast<EntityCheckFn>(isValid);
 		g_isBuilt      = reinterpret_cast<EntityCheckFn>(isBuilt);
+		g_getHandle    = reinterpret_cast<GetHandleFn>(getHandle);
 
-		g_resolved = all && getSubsystem && getFragment && isValid && isBuilt;
+		g_resolved = all && getSubsystem && getFragment && isValid && isBuilt && getHandle;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
 	}
@@ -428,7 +447,7 @@ namespace Waila::RailMass
 	bool Available()
 	{
 		return g_resolved && g_feature.On() && !g_faulted
-			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && Fields::HelperEntity.offset >= 0;
+			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && Fields::HelperEntity.offset >= 0;
 	}
 
 	Entity EntityOf(AActor* actor)
