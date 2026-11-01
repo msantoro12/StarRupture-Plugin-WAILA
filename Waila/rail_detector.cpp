@@ -67,8 +67,7 @@ namespace Waila
 		// recipe's own output count.
 		bool RecipeRate(UAuItemRecipeData* recipe, int32_t countOverride, float speed, float& outFull)
 		{
-			const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(recipe);
-			const int32_t count = countOverride > 0 ? countOverride : (recipeOutput ? recipeOutput->Count : 0);
+			const int32_t count = countOverride > 0 ? countOverride : Fields::RecipeOutputCount(recipe);
 			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
 			if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
 				return false;
@@ -100,12 +99,11 @@ namespace Waila
 			// ItemsToCraft is empty while a crafter waits for input (seen on every
 			// crafter just after a save loads); the fragment still holds the recipe
 			// the player picked (INFERRED).
-			const TArray<FAuCraftItem>* queue = Fields::ItemsToCraft.In(comp);
-			const FAuCraftItem* first = queue && queue->Num() > 0 ? &(*queue)[0] : nullptr;
-			const bool queued = first && first->RecipeData;
+			const Fields::QueuedCraft first = Fields::FirstQueuedCraft(comp);
+			const bool queued = first.recipe != nullptr;
 
-			UAuItemRecipeData* recipe = queued ? first->RecipeData
-									: frag     ? static_cast<UAuItemRecipeData*>(frag->SelectedRecipe)
+			UAuItemRecipeData* recipe = queued ? first.recipe
+									: frag     ? static_cast<UAuItemRecipeData*>(Fields::ValueOr<UCrItemRecipeData*>(Fields::FragSelected, frag, nullptr))
 												: nullptr;
 			if (!recipe)
 				return false;
@@ -114,8 +112,9 @@ namespace Waila
 				return false;
 
 			const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter);
-			const float speed = frag ? frag->CraftingSpeed : (settings ? settings->CraftingSpeed : 0.0f);
-			return RecipeRate(recipe, queued ? first->OutputItem.Count : 0, speed, outFull);
+			const float speed = frag ? Fields::ValueOr<float>(Fields::FragSpeed, frag)
+			                         : Fields::ValueOr<float>(Fields::SettingsSpeed, settings);
+			return RecipeRate(recipe, queued ? first.outputCount : 0, speed, outFull);
 		}
 
 		// Whether the crafter is producing right now: the game's own building state
@@ -189,12 +188,14 @@ namespace Waila
 					continue;
 
 				named.clear();
-				const TArray<FBuildingSocketData>* sockets = Fields::SocketsData.In(point);
-				for (int32_t s = 0; sockets && s < sockets->Num(); ++s)
+				const Fields::StructArray sockets(Fields::SocketsData.In(point), Fields::SocketDataSize);
+				for (int32_t s = 0; s < sockets.Num(); ++s)
 				{
-					const FBuildingSocketData& socket = (*sockets)[s];
-					if (socket.Socket)
-						named.push_back({ socket.Socket->SocketName.ToString(), ToVec(socket.WorldTransform.Translation) });
+					const uint8_t* socket = sockets.At(s);
+					const UStaticMeshSocket* mesh = Fields::ValueOr<UStaticMeshSocket*>(Fields::SocketRef, socket, nullptr);
+					const FTransform* transform = Fields::SocketTransform.In(socket);
+					if (mesh && transform)
+						named.push_back({ mesh->SocketName.ToString(), ToVec(transform->Translation) });
 				}
 				scene.AddPathPoint(named);
 			}

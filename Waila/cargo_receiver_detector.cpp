@@ -1,5 +1,4 @@
 #include "cargo_receiver_detector.h"
-#include <unordered_map>
 #include "waila_functions.h"
 #include "waila_fields.h"
 #include "plugin_helpers.h"
@@ -53,46 +52,7 @@ namespace Waila
 				FCrItemsStorageContainer* container = fnGetContainer(itemStorage, world);
 				if (container)
 				{
-					// storedItems is deduplicated by item type, so its size counts
-					// the *kinds* held. Occupied slots are counted as we go.
-					std::unordered_map<std::string, size_t> itemIndexMap;
-					int32_t occupiedSlots = 0;
-
-					for (int i = 0; i < container->Items.Num(); ++i)
-					{
-						const FCrStorageItem& slot = container->Items[i];
-						if (slot.bIsDisabled || slot.Item.Count <= 0)
-							continue;
-
-						++occupiedSlots;
-
-						std::string uniqueName;
-						std::string displayName;
-						UAuItemDataBase* itemData = nullptr;
-						if (slot.Item.ItemDataBase && UKismetSystemLibrary::IsValid(slot.Item.ItemDataBase))
-						{
-							itemData    = slot.Item.ItemDataBase;
-							uniqueName  = Fields::UniqueNameOf(itemData);
-							displayName = Fields::DisplayNameOf(itemData);
-						}
-
-						auto it = itemIndexMap.find(uniqueName);
-						if (it != itemIndexMap.end())
-						{
-							outInfo.storedItems[it->second].count += slot.Item.Count;
-						}
-						else
-						{
-							itemIndexMap[uniqueName] = outInfo.storedItems.size();
-							StoredItemEntry entry;
-							entry.uniqueName  = uniqueName;
-							entry.displayName = displayName;
-							entry.count       = slot.Item.Count;
-							entry.itemData    = itemData;
-							outInfo.storedItems.push_back(entry);
-						}
-					}
-					outInfo.usedSlots = occupiedSlots;
+					ReadStoredItems(container, outInfo.storedItems, outInfo.usedSlots);
 				}
 			}
 

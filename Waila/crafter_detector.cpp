@@ -1,6 +1,7 @@
 #include "crafter_detector.h"
 #include "waila_functions.h"
 #include "waila_fields.h"
+#include "storage_detector.h"
 #include "plugin_helpers.h"
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
@@ -10,6 +11,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace SDK;
 
@@ -68,15 +70,13 @@ namespace Waila
 			if (!container)
 				return false;
 
-			for (int i = 0; i < container->Items.Num(); ++i)
+			std::vector<StoredItemEntry> stored;
+			int32_t usedSlots = 0;
+			ReadStoredItems(container, stored, usedSlots);
+			for (const StoredItemEntry& entry : stored)
 			{
-				const FCrStorageItem& slot = container->Items[i];
-				if (slot.bIsDisabled || slot.Item.Count <= 0)
-					continue;
-				if (!slot.Item.ItemDataBase || !UKismetSystemLibrary::IsValid(slot.Item.ItemDataBase))
-					continue;
-
-				outStock[Fields::UniqueNameOf(slot.Item.ItemDataBase)] += slot.Item.Count;
+				if (entry.itemData)
+					outStock[entry.uniqueName] += entry.count;
 			}
 
 			return true;
@@ -114,8 +114,7 @@ namespace Waila
 			outInfo.buildingDesc = "N/A";
 		}
 
-		if (const FCrCraftingSettings* settings = Fields::CraftingSettings.In(crafter))
-			outInfo.craftingSpeed = settings->CraftingSpeed;
+		outInfo.craftingSpeed = Fields::ValueOr<float>(Fields::SettingsSpeed, Fields::CraftingSettings.In(crafter), outInfo.craftingSpeed);
 
 		// Crafting progress (0.0 - 1.0)
 		outInfo.craftingProgress = crafter->GetItemCraftingProgress();
@@ -127,15 +126,13 @@ namespace Waila
 
 		if (comp)
 		{
-			const TArray<FAuCraftItem>* queue = Fields::ItemsToCraft.In(comp);
-			const FAuCraftItem* first = queue && queue->Num() > 0 ? &(*queue)[0] : nullptr;
+			const Fields::QueuedCraft first = Fields::FirstQueuedCraft(comp);
 
-			if (first && first->RecipeData)
+			if (first.recipe)
 			{
-				outInfo.recipeBuildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, first->RecipeData);
-				const FAuItemRecipeOrder* recipeOutput = Fields::RecipeOutputItem.In(first->RecipeData);
-				outInfo.recipeOutputCount = first->OutputItem.Count > 0 ? first->OutputItem.Count : (recipeOutput ? recipeOutput->Count : 0);
-				UAuItemDataBase* itemData = first->RecipeData->GetItemDataBase();
+				outInfo.recipeBuildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, first.recipe);
+				outInfo.recipeOutputCount = first.outputCount > 0 ? first.outputCount : Fields::RecipeOutputCount(first.recipe);
+				UAuItemDataBase* itemData = first.recipe->GetItemDataBase();
 				if (itemData)
 				{
 					outInfo.currentRecipe = Fields::UniqueNameOf(itemData);
@@ -143,26 +140,25 @@ namespace Waila
 				}
 
 				// Store typed recipe pointer for the output icon (UCrItemRecipeData extends UAuItemRecipeData)
-				if (first->RecipeData->IsA(UCrItemRecipeData::StaticClass()))
-					outInfo.recipeDataPtr = static_cast<UCrItemRecipeData*>(first->RecipeData);
+				if (first.recipe->IsA(UCrItemRecipeData::StaticClass()))
+					outInfo.recipeDataPtr = static_cast<UCrItemRecipeData*>(first.recipe);
 
 				// Recipe inputs and output. The have-counts come from the crafter's
 				// own input store, so a starved machine can be spotted without
 				// opening it.
-				UAuItemRecipeData* recipe = first->RecipeData;
+				UAuItemRecipeData* recipe = first.recipe;
 
 				std::unordered_map<std::string, int32_t> stock;
 				const bool stockKnown = ReadInputStock(building, stock);
 
-				const TArray<FAuItemRecipeOrder>* neededAt = Fields::NeededResources.In(recipe);
-				const int32 neededCount = neededAt ? neededAt->Num() : 0;
-				outInfo.recipeInputs.reserve(static_cast<size_t>(neededCount));
+				const Fields::StructArray needed(Fields::NeededResources.In(recipe), Fields::RecipeOrderSize);
+				outInfo.recipeInputs.reserve(static_cast<size_t>(needed.Num()));
 
-				for (int i = 0; i < neededCount; ++i)
+				for (int32_t i = 0; i < needed.Num(); ++i)
 				{
-					const FAuItemRecipeOrder& order = (*neededAt)[i];
+					const uint8_t* order = needed.At(i);
 					RecipeItemEntry entry;
-					FillEntry(entry, order.Item, order.Count);
+					FillEntry(entry, Fields::OrderItemClass(order), Fields::ValueOr<int32_t>(Fields::OrderCount, order));
 					if (!entry.IsValid())
 						continue;
 
@@ -175,7 +171,7 @@ namespace Waila
 					outInfo.recipeInputs.push_back(std::move(entry));
 				}
 
-				FillEntry(outInfo.recipeOutput, recipeOutput ? recipeOutput->Item : nullptr, outInfo.recipeOutputCount);
+				FillEntry(outInfo.recipeOutput, Fields::RecipeOutputClass(recipe), outInfo.recipeOutputCount);
 			}
 
 			// pattern: UCrCraftingComponent::GetCraftingFragment
@@ -186,9 +182,9 @@ namespace Waila
 				const FCrCraftingFragment* frag = fnGetFrag(comp);
 				if (frag)
 				{
-					outInfo.craftingMultiplier = frag->CraftingMultiplier;
-					outInfo.bMissingItems      = frag->bIsMissingItems;
-					outInfo.bOutputFull        = frag->bOutputFull;
+					outInfo.craftingMultiplier = Fields::ValueOr<int32_t>(Fields::FragMultiplier, frag, outInfo.craftingMultiplier);
+					outInfo.bMissingItems      = Fields::ValueOr<bool>(Fields::FragMissingItems, frag);
+					outInfo.bOutputFull        = Fields::ValueOr<bool>(Fields::FragOutputFull, frag);
 				}
 			}
 		}

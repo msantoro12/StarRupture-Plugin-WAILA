@@ -63,15 +63,23 @@ namespace Waila::Fields
 {
     bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
     {
-        return PluginMap::ResolveFields(scanner, self,
-            PlacementData, ItemStorage, InItemStorage, BuildingName, BuildingDesc,
-            ItemName, UniqueItemName, GridColumns, GridRows,
-            CraftComponent, CraftingSettings, ItemsToCraft, NeededResources, RecipeOutputItem, RecipeBuildTime,
-            SocketsData, Spline,
+        // Every key is asked even after a miss, so the log lists them all.
+        bool all = PluginMap::ResolveFields(scanner, self,
+            PlacementData, ItemStorage, InItemStorage, BuildingName, BuildingDesc, BuildingIcon,
+            ItemName, UniqueItemName, ItemIcon, GridColumns, GridRows,
+            StorageItems, SlotDisabled, SlotItem, SimpleItemCount, SimpleItemData,
+            CraftComponent, CraftingSettings, SettingsSpeed, ItemsToCraft, NeededResources, RecipeOutputItem,
+            RecipeBuildTime, RecipeIcon, QueuedRecipe, QueuedOutput, OrderItem, OrderCount,
+            FragMultiplier, FragMissingItems, FragOutputFull, FragSelected, FragSpeed,
+            SocketsData, Spline, SocketRef, SocketTransform,
             PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
             ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
-            HelperNetID, HelperEntity, PlacementSockets,
-            StorageContainerSize, StorageItemSize, CraftItemSize, RecipeOrderSize, CraftingFragmentSize,
-            CraftingSettingsSize, SocketDataSize, PlacementSocketSize, SenderReceiverSize, ConnectionDataSize);
+            HelperNetID, HelperEntity, PlacementSockets, SocketUseCount,
+            SenderIsSender, SenderLocation, SenderItemType, SenderEntity);
+
+        for (PluginFieldSpec* size : { &StorageItemSize, &CraftItemSize, &RecipeOrderSize, &SocketDataSize,
+                                       &PlacementSocketSize, &SenderReceiverSize, &ConnectionDataSize, &HelperSize })
+            all = ResolveSize(scanner, self, *size) && all;
+        return all;
     }
 }

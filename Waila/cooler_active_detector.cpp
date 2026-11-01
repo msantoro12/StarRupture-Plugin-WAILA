@@ -46,17 +46,8 @@ namespace Waila
 		// the component's, which is an SDK class.
 		UAuActorPlacementSocketsComponent** socketsAt = Fields::ActiveCoolerSockets.In(Fields::ObjectProperties(), cooler);
 		UAuActorPlacementSocketsComponent* socketsComponent = socketsAt ? *socketsAt : nullptr;
-		const TArray<FAuActorPlacementSingleSocketData>* sockets = socketsComponent && UKismetSystemLibrary::IsValid(socketsComponent)
-			? Fields::PlacementSockets.In(socketsComponent) : nullptr;
-		if (sockets)
-		{
-			outInfo.totalSockets = sockets->Num();
-			for (int32 i = 0; i < sockets->Num(); ++i)
-			{
-				if ((*sockets)[i].UseCount > 0)
-					++outInfo.connectedSockets;
-			}
-		}
+		if (socketsComponent && UKismetSystemLibrary::IsValid(socketsComponent))
+			Fields::CountSockets(socketsComponent, outInfo.totalSockets, outInfo.connectedSockets);
 
 		return true;
 	}

@@ -11,6 +11,56 @@ using namespace SDK;
 
 namespace Waila
 {
+	void ReadStoredItems(const FCrItemsStorageContainer* container,
+	                     std::vector<StoredItemEntry>& items, int32_t& usedSlots)
+	{
+		// The list is deduplicated by item type, so its size counts the *kinds*
+		// held — 1 for a depot full of a single item. Occupied slots have to be
+		// counted as the slots go by.
+		std::unordered_map<std::string, size_t> itemIndexMap;
+
+		const Fields::StructArray slots(Fields::StorageItems.In(container), Fields::StorageItemSize);
+		for (int32_t i = 0; i < slots.Num(); ++i)
+		{
+			const uint8_t* slot = slots.At(i);
+			const void* simple  = Fields::SlotItem.In(slot);
+			const int32_t count = Fields::ValueOr<int32_t>(Fields::SimpleItemCount, simple);
+			if (Fields::ValueOr<bool>(Fields::SlotDisabled, slot) || count <= 0)
+				continue;
+
+			++usedSlots;
+
+			std::string uniqueName;
+			std::string displayName;
+			UAuItemDataBase* itemData = Fields::ValueOr<UAuItemDataBase*>(Fields::SimpleItemData, simple, nullptr);
+			if (itemData && UKismetSystemLibrary::IsValid(itemData))
+			{
+				uniqueName  = Fields::UniqueNameOf(itemData);
+				displayName = Fields::DisplayNameOf(itemData);
+			}
+			else
+			{
+				itemData = nullptr;
+			}
+
+			auto it = itemIndexMap.find(uniqueName);
+			if (it != itemIndexMap.end())
+			{
+				items[it->second].count += count;
+			}
+			else
+			{
+				itemIndexMap[uniqueName] = items.size();
+				StoredItemEntry entry;
+				entry.uniqueName  = uniqueName;
+				entry.displayName = displayName;
+				entry.count       = count;
+				entry.itemData    = itemData;
+				items.push_back(entry);
+			}
+		}
+	}
+
 	bool StorageDetector::IsStorage(AActor* actor)
 	{
 		if (!actor || !UKismetSystemLibrary::IsValid(actor))
@@ -60,47 +110,7 @@ namespace Waila
 					FCrItemsStorageContainer* container = fnGetContainer(itemStorage, world);
 					if (container)
 					{
-						// storedItems is deduplicated by item type, so its size counts
-						// the *kinds* held — 1 for a depot full of a single item.
-						// Occupied slots have to be counted as the slots go by.
-						std::unordered_map<std::string, size_t> itemIndexMap;
-						int32_t occupiedSlots = 0;
-
-						for (int i = 0; i < container->Items.Num(); ++i)
-						{
-							const FCrStorageItem& slot = container->Items[i];
-							if (slot.bIsDisabled || slot.Item.Count <= 0)
-								continue;
-
-							++occupiedSlots;
-
-							std::string uniqueName;
-							std::string displayName;
-							UAuItemDataBase* itemData = nullptr;
-							if (slot.Item.ItemDataBase && UKismetSystemLibrary::IsValid(slot.Item.ItemDataBase))
-							{
-								itemData    = slot.Item.ItemDataBase;
-								uniqueName  = Fields::UniqueNameOf(itemData);
-								displayName = Fields::DisplayNameOf(itemData);
-							}
-
-							auto it = itemIndexMap.find(uniqueName);
-							if (it != itemIndexMap.end())
-							{
-								outInfo.storedItems[it->second].count += slot.Item.Count;
-							}
-							else
-							{
-								itemIndexMap[uniqueName] = outInfo.storedItems.size();
-								StoredItemEntry entry;
-								entry.uniqueName  = uniqueName;
-								entry.displayName = displayName;
-								entry.count       = slot.Item.Count;
-								entry.itemData    = itemData;
-								outInfo.storedItems.push_back(entry);
-							}
-						}
-						outInfo.usedSlots = occupiedSlots;
+						ReadStoredItems(container, outInfo.storedItems, outInfo.usedSlots);
 					}
 				}
 			}
