@@ -12,4 +12,5 @@ Idle crafters count with the recipe they are set to
 The card follows the camera, so it works from the building drone; Max Distance counts from the drone
 A rail card lists where its items come from and go to under its item rates, including machines, storage and stations out of render range
 Buildings of one kind making or taking the same item share one From or To row, with their count and their rates added up
-Buildings out of render range are named from the game's Mass data instead of reading "Out of range"; only a building the data cannot name reads "Unknown building"
+Buildings out of render range are named from the game's Mass data instead of reading "Out of range"; only a building the data cannot name reads "Unknown building" (no building data for it, or the name read is off on this build)
+A crafter at an end shows what it takes for an ingredient the rail carries, as well as what it makes

@@ -330,7 +330,7 @@ namespace Waila::UI
 	namespace
 	{
 		// Where the rail's items come from, then where they go, under the item
-		// rates, in the rows left. A crafter shows what it makes now; storage and
+		// rates, in the rows left. A crafter shows what it makes or takes now; storage and
 		// stations have no rate, and min and max are the rail's, so those stay blank.
 		// Returns the rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
@@ -392,7 +392,7 @@ namespace Waila::UI
 		char buf[48];
 		if (!info.peers.empty())
 		{
-			snprintf(buf, sizeof(buf), "%d from, %d to", info.fromCount, info.destCount);
+			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.peersTruncated ? "+" : "");
 			out.statusText = buf;
 		}
 		else if (info.sourceCount > 0)

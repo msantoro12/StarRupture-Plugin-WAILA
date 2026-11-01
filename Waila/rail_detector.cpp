@@ -325,11 +325,13 @@ namespace Waila
 
 		// ---- From the game's Mass data (rail_mass.h) ---------------------------
 
-		// More than this many distinct buildings stops being a glance.
-		constexpr size_t kMaxPeers = 32;
+		// The most buildings kept per rail: the reader's own cap on one observation.
+		// Rows merge by building name, so this only bounds the work and the counts.
+		constexpr size_t kMaxPeers = 256;
 
-		// Stands in for a building the Mass data cannot name: its entity is gone,
-		// has no building parameters, or they hold no building data.
+		// Stands in for a building the Mass data cannot name: the building names are
+		// off on this build or faulted, the entity is gone or not built, it has no
+		// building parameters, or they hold no building data (see ReadBuilding).
 		const std::string kUnknownBuilding = "Unknown building";
 
 		// One building and one item, seen at an end of the rail's traffic. Kept
@@ -352,6 +354,7 @@ namespace Waila
 			const AActor*                         rail = nullptr;
 			std::chrono::steady_clock::time_point stamp{};
 			bool                                  railFound = false;
+		bool                                  truncated = false;   // more buildings than kMaxPeers were seen
 			int32_t                               drones    = 0;
 			float                                 capacity  = -1.0f;   // items a minute; negative when unread
 			std::vector<MassPeer>                 peers;
@@ -371,7 +374,10 @@ namespace Waila
 			return std::string();
 		}
 
-		// A crafter's rate for the item the rail moves: only when it makes that item.
+		// A crafter's rate for the item the rail moves, items a minute: what it
+		// makes when the item is its product, what it takes when the item is an
+		// ingredient of its recipe, 0 while it is stalled. Unread for any other
+		// building (storage, stations) or when the recipe has neither.
 		void RateOf(MassPeer& peer)
 		{
 			peer.perMinNow = -1.0f;
@@ -379,11 +385,27 @@ namespace Waila
 			if (!Features::Crafters.On() || !RailMass::ReadCrafter(peer.entity, crafter) || !crafter.recipe)
 				return;
 
-			UAuItemDataBase* made = crafter.recipe->GetItemDataBase();
 			float full = 0.0f;
-			if (!made || Fields::UniqueNameOf(made) != peer.itemUnique
-				|| !RecipeRate(crafter.recipe, 0, crafter.speed, full))
-				return;
+			UAuItemDataBase* made = crafter.recipe->GetItemDataBase();
+			if (made && Fields::UniqueNameOf(made) == peer.itemUnique)
+			{
+				if (!RecipeRate(crafter.recipe, 0, crafter.speed, full))
+					return;
+			}
+			else
+			{
+				bool found = false;
+				const Fields::StructArray needed(Fields::NeededResources.In(crafter.recipe), Fields::RecipeOrderSize);
+				for (int32_t i = 0; i < needed.Num() && !found; ++i)
+				{
+					const uint8_t* order = needed.At(i);
+					UAuItemDataBase* item = Fields::ItemDefaultsOf(Fields::OrderItemClass(order));
+					found = item && Fields::UniqueNameOf(item) == peer.itemUnique
+						&& CountRate(crafter.recipe, Fields::ValueOr<int32_t>(Fields::OrderCount, order), crafter.speed, full);
+				}
+				if (!found)
+					return;
+			}
 			peer.perMinNow = crafter.stalled ? 0.0f : full;
 		}
 
@@ -394,8 +416,13 @@ namespace Waila
 				const std::string unique = p.item ? Fields::UniqueNameOf(p.item) : std::string();
 				const auto same = std::find_if(cache.peers.begin(), cache.peers.end(), [&](const MassPeer& m)
 					{ return m.entity == p.entity && m.source == p.source && m.itemUnique == unique; });
-				if (same != cache.peers.end() || cache.peers.size() >= kMaxPeers)
+				if (same != cache.peers.end())
 					continue;
+				if (cache.peers.size() >= kMaxPeers)
+				{
+					cache.truncated = true;
+					continue;
+				}
 
 				MassPeer peer;
 				peer.entity = p.entity;
@@ -474,16 +501,15 @@ namespace Waila
 		{
 			if (g_massCache.rail != actor || now - g_massCache.stamp >= kRefresh)
 			{
-				UWorld* world = PluginSdkRuntime::GetWorld();
 				if (g_massCache.rail != actor)
 					g_massCache = MassCache{};
 				g_massCache.rail  = actor;
 				g_massCache.stamp = now;
-				if (world)
-					RefreshMass(actor, g_massCache);
+				RefreshMass(actor, g_massCache);
 			}
 
 			outInfo.fromMass = true;
+			outInfo.peersTruncated = g_massCache.truncated;
 
 			// One row per end, building and item: buildings of the same name making
 			// or taking the same item merge into one row, whichever entities they
