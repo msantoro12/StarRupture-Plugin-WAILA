@@ -405,8 +405,11 @@ namespace Waila::RailMass
 		// SlotLength behind the drone ahead. A waiting drone joins once the space
 		// left at the start (the lane's length, less the last drone's distance and
 		// half a SlotLength, or nothing on a start lane) reaches the settings'
-		// HalfRailSlotLengthDefault. So drones run no closer than the larger of
-		// the two gaps, and a drone carries one item.
+		// HalfRailSlotLengthDefault. A drone arriving while none wait may join
+		// sooner, but once drones queue, which is when the rail is full, they join
+		// the second way. So a full rail runs drones no closer than the larger of
+		// the two gaps. The request subsystem loads a drone with at most one item
+		// (UpdateRequests clamps the carried count to 1), whatever the item.
 		void ReadCapacityImpl(Entity rail, float& perMin)
 		{
 			if (!FindStructs())
