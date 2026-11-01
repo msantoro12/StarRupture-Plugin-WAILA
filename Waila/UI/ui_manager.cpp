@@ -2,6 +2,7 @@
 #include "plugin_helpers.h"
 #include "plugin_config.h"
 #include "waila_functions.h"
+#include "waila_fields.h"
 #include "UI/icon_cache.h"
 #include "UI/ui_draw.h"
 #include "UI/ui_theme.h"
@@ -294,37 +295,47 @@ namespace Waila::UI
 		bool bHit = m_raycaster.PerformRaycast(m_maxDistance, hit);
 		if (bHit && hit.actor)
 		{
+			// A card whose parts are not all on shows nothing; the hit is still
+			// that kind of building, so it does not fall through to another card.
 			if (Waila::CrafterDetector::IsCrafter(hit.actor))
 			{
-				Waila::CrafterDetector::GetCrafterInfo(hit.actor, info);
+				if (Waila::Features::ShowCrafters())
+					Waila::CrafterDetector::GetCrafterInfo(hit.actor, info);
 			}
 			else if (Waila::StorageDetector::IsStorage(hit.actor))
 			{
-				Waila::StorageDetector::GetStorageInfo(hit.actor, storageInfo);
+				if (Waila::Features::ShowItems())
+					Waila::StorageDetector::GetStorageInfo(hit.actor, storageInfo);
 			}
 			else if (Waila::PowerDetector::IsGenerator(hit.actor))
 			{
-				Waila::PowerDetector::GetPowerInfo(hit.actor, powerInfo);
+				if (Waila::Features::ShowBuildings())
+					Waila::PowerDetector::GetPowerInfo(hit.actor, powerInfo);
 			}
 			else if (Waila::CoolerActiveDetector::IsCoolerActive(hit.actor))
 			{
-				Waila::CoolerActiveDetector::GetCoolerActiveInfo(hit.actor, coolerActiveInfo);
+				if (Waila::Features::ShowBuildings())
+					Waila::CoolerActiveDetector::GetCoolerActiveInfo(hit.actor, coolerActiveInfo);
 			}
 			else if (Waila::CoolerPassiveDetector::IsCoolerPassive(hit.actor))
 			{
-				Waila::CoolerPassiveDetector::GetCoolerPassiveInfo(hit.actor, coolerPassiveInfo);
+				if (Waila::Features::ShowBuildings())
+					Waila::CoolerPassiveDetector::GetCoolerPassiveInfo(hit.actor, coolerPassiveInfo);
 			}
 			else if (Waila::CargoSenderDetector::IsSender(hit.actor))
 			{
-				Waila::CargoSenderDetector::GetSenderInfo(hit.actor, cargoSenderInfo);
+				if (Waila::Features::ShowPackageTransport())
+					Waila::CargoSenderDetector::GetSenderInfo(hit.actor, cargoSenderInfo);
 			}
 			else if (Waila::CargoReceiverDetector::IsReceiver(hit.actor))
 			{
-				Waila::CargoReceiverDetector::GetReceiverInfo(hit.actor, cargoReceiverInfo);
+				if (Waila::Features::ShowItems())
+					Waila::CargoReceiverDetector::GetReceiverInfo(hit.actor, cargoReceiverInfo);
 			}
 			else if (Waila::RailDetector::IsRail(hit.actor))
 			{
-				Waila::RailDetector::GetRailInfo(hit.actor, railInfo);
+				if (Waila::Features::ShowRailSources() || Waila::Features::ShowDroneRails())
+					Waila::RailDetector::GetRailInfo(hit.actor, railInfo);
 			}
 		}
 

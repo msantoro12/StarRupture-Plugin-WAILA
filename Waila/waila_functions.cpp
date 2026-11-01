@@ -21,6 +21,8 @@ namespace Waila::Functions
         if (!self || !scanner)
             return;
 
+        Features::Declare(self, scanner);
+
         // Optional: each backs one detector panel that already degrades on its
         // own, which is what the old scan-at-init path did. The loader still
         // lists a miss for the user.
@@ -30,20 +32,20 @@ namespace Waila::Functions
         // shape lined up somewhere. Calling an address that merely looked like a
         // function is the failure this is here to prevent.
         if (uintptr_t addr = PluginMap::Function(scanner, self,
-                "UCrCraftingComponent::GetCraftingFragment", kGetCraftingFragmentPattern,
+                Fields::Keys::GetCraftingFragment, kGetCraftingFragmentPattern,
                 PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
             s_getCraftingFragment = reinterpret_cast<FGetCraftingFragment>(addr);
         else
             LOG_WARN("WailaFunctions: GetCraftingFragment unresolved");
 
         if (uintptr_t addr = PluginMap::Function(scanner, self,
-                "UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal",
-                kGetStoredItemsContainerInternalPattern, PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
+                Fields::Keys::GetStoredItemsContainerInternal, kGetStoredItemsContainerInternalPattern, PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL))
             s_getStoredItemsContainerInternal = reinterpret_cast<FGetStoredItemsContainerInternal>(addr);
         else
             LOG_WARN("WailaFunctions: GetStoredItemsContainerInternal unresolved");
 
         Fields::Resolve(self, scanner);
+        RailMass::Resolve(self, scanner);
     }
 
     FGetCraftingFragment GetCraftingFragment()
@@ -61,15 +63,23 @@ namespace Waila::Fields
 {
     bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
     {
-        return PluginMap::ResolveFields(scanner, self,
-            PlacementData, ItemStorage, InItemStorage, BuildingName, BuildingDesc,
-            ItemName, UniqueItemName, GridColumns, GridRows,
-            CraftComponent, CraftingSettings, ItemsToCraft, NeededResources, RecipeOutputItem, RecipeBuildTime,
-            SocketsData, Spline,
+        // Every key is asked even after a miss, so the log lists them all.
+        bool all = PluginMap::ResolveFields(scanner, self,
+            PlacementData, ItemStorage, InItemStorage, BuildingName, BuildingDesc, BuildingIcon,
+            ItemName, UniqueItemName, ItemIcon, GridColumns, GridRows,
+            StorageItems, SlotDisabled, SlotItem, SimpleItemCount, SimpleItemData,
+            CraftComponent, CraftingSettings, SettingsSpeed, ItemsToCraft, NeededResources, RecipeOutputItem,
+            RecipeBuildTime, RecipeIcon, QueuedRecipe, QueuedOutput, OrderItem, OrderCount,
+            FragMultiplier, FragMissingItems, FragOutputFull, FragSelected, FragSpeed,
+            SocketsData, Spline, SocketRef, SocketTransform,
             PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
             ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
-            HelperNetID, HelperEntity, PlacementSockets,
-            StorageContainerSize, StorageItemSize, CraftItemSize, RecipeOrderSize, CraftingFragmentSize,
-            CraftingSettingsSize, SocketDataSize, PlacementSocketSize, SenderReceiverSize, ConnectionDataSize);
+            HelperNetID, HelperEntity, PlacementSockets, SocketUseCount,
+            SenderIsSender, SenderLocation, SenderItemType, SenderEntity);
+
+        for (PluginFieldSpec* size : { &StorageItemSize, &CraftItemSize, &RecipeOrderSize, &SocketDataSize,
+                                       &PlacementSocketSize, &SenderReceiverSize, &ConnectionDataSize, &HelperSize })
+            all = ResolveSize(scanner, self, *size) && all;
+        return all;
     }
 }

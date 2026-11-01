@@ -13,7 +13,7 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
-  - **Drone Rails** — the crafters that feed a rail, summed per item as items per minute (now and at full speed); traced back along the flow through poles, junctions, mergers, a lane's own track and storage. Only buildings the game has loaded count
+  - **Drone Rails** — where a rail's items come from and go to, read from the game's drone logistics: machines, storage and stations, including ones out of render range (shown as "Out of range"). Crafters show items per minute, now and at full speed. A rail with no drones on it reads "No cargo moving"
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 

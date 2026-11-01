@@ -60,26 +60,19 @@
     </ClCompile>
   </ItemDefinitionGroup>
 
-  <!-- ============================================================
-       PLUGIN_GAME_BUILT_CL
-       The game build (CL) the Game-SDK was generated from, read from
-       the build_cl.txt beside its Client\ or Server\ SDK, and stored
-       in PluginInfo::gameBuiltCL by plugin_interface.h. No file: no
-       define, and the plugin declares build 0.
-       ============================================================ -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Client Debug' Or '$(Configuration)' == 'Client Release' Or '$(Configuration)' == 'Local SDK Client Debug' Or '$(Configuration)' == 'Local SDK Client Release'">
-    <StarRuptureBuildCLFile>$(GameSDKRoot)\Client\build_cl.txt</StarRuptureBuildCLFile>
+  <!-- PLUGIN_GAME_BUILT_CL: the game build this plugin's own candidate rows are for.
+       CI or tools\sr-update.ps1 can pass /p:PluginGameBuiltCL=<CL> instead. See
+       PluginGameBuild.props in the Plugin SDK. -->
+  <PropertyGroup>
+    <PluginGameBuiltCL Condition="'$(PluginGameBuiltCL)' == ''">127004</PluginGameBuiltCL>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Server Debug' Or '$(Configuration)' == 'Server Release' Or '$(Configuration)' == 'Local SDK Server Debug' Or '$(Configuration)' == 'Local SDK Server Release'">
-    <StarRuptureBuildCLFile>$(GameSDKRoot)\Server\build_cl.txt</StarRuptureBuildCLFile>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(StarRuptureBuildCLFile)' != '' And Exists('$(StarRuptureBuildCLFile)')">
-    <StarRuptureGameBuiltCL>$([System.IO.File]::ReadAllText('$(StarRuptureBuildCLFile)').Trim())</StarRuptureGameBuiltCL>
-  </PropertyGroup>
-  <ItemDefinitionGroup Condition="'$(StarRuptureGameBuiltCL)' != ''">
-    <ClCompile>
-      <PreprocessorDefinitions>PLUGIN_GAME_BUILT_CL=$(StarRuptureGameBuiltCL)u;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-    </ClCompile>
-  </ItemDefinitionGroup>
+  <Import Project="$(PluginSDKInclude)\..\PluginGameBuild.props"
+          Condition="Exists('$(PluginSDKInclude)\..\PluginGameBuild.props')" />
 
+  <!-- Rule 3: a plugin never reads a game-class member directly (Plugin SDK tools\Rule3Check.targets).
+       Reports until the plugin sets PLUGIN_MAP_MIGRATED, then fails the build. -->
+  <PropertyGroup>
+    <Rule3Plugin>WAILA</Rule3Plugin>
+  </PropertyGroup>
+  <Import Project="$(PluginSDKInclude)\..\tools\Rule3Check.targets" Condition="Exists('$(PluginSDKInclude)\..\tools\Rule3Check.targets')" />
 </Project>

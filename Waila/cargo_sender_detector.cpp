@@ -66,40 +66,39 @@ namespace Waila
 		outInfo.sendingTime = Fields::ValueOr<float>(Fields::SendingTime, replicator);
 
 		const auto* senderContainer = Fields::SenderReceiversContainer.In(replicator);
-		const auto* allDataAt = Fields::AllSenderReceiversData.In(senderContainer);
-		if (!allDataAt)
-			return true;
-		const TArray<FCrSenderReceiverData>& allData = *allDataAt;
+		const Fields::StructArray allData(Fields::AllSenderReceiversData.In(senderContainer), Fields::SenderReceiverSize);
 
 		// Match by world-space proximity: find the sender entry closest to this building
 		FVector actorLoc = actor->K2_GetActorLocation();
-		const FCrSenderReceiverData* bestMatch = nullptr;
+		const uint8_t* bestMatch = nullptr;
 		double bestDistSq = 1e30;
 
-		for (int i = 0; i < allData.Num(); ++i)
+		for (int32_t i = 0; i < allData.Num(); ++i)
 		{
-			const FCrSenderReceiverData& data = allData[i];
-			if (!data.bIsSender)
+			const uint8_t* data = allData.At(i);
+			const auto* location = Fields::SenderLocation.In(data);
+			if (!location || !Fields::ValueOr<bool>(Fields::SenderIsSender, data))
 				continue;
 
-			double dx = data.Location.X - actorLoc.X;
-			double dy = data.Location.Y - actorLoc.Y;
-			double dz = data.Location.Z - actorLoc.Z;
+			double dx = location->X - actorLoc.X;
+			double dy = location->Y - actorLoc.Y;
+			double dz = location->Z - actorLoc.Z;
 			double distSq = dx * dx + dy * dy + dz * dz;
 			if (distSq < bestDistSq)
 			{
 				bestDistSq = distSq;
-				bestMatch  = &data;
+				bestMatch  = data;
 			}
 		}
 
 		if (bestMatch)
 		{
 			// Primary: ItemType on the sender data entry (may be null)
-			if (bestMatch->ItemType && UKismetSystemLibrary::IsValid(bestMatch->ItemType))
+			UCrItemDataBase* matchItem = Fields::ValueOr<UCrItemDataBase*>(Fields::SenderItemType, bestMatch, nullptr);
+			if (matchItem && UKismetSystemLibrary::IsValid(matchItem))
 			{
-				outInfo.sendingItem     = bestMatch->ItemType;
-				outInfo.sendingItemName = Fields::DisplayNameOf(bestMatch->ItemType);
+				outInfo.sendingItem     = matchItem;
+				outInfo.sendingItemName = Fields::DisplayNameOf(matchItem);
 			}
 			// Replicate GetSenderItem + GetStartSendServerTime inline in one pass.
 			// Both scan ConnectionsContainer.ConnectionsData by the same sender match: the
@@ -107,26 +106,26 @@ namespace Waila
 			// members of the connection entry.
 			{
 				const auto* connContainer = Fields::ConnectionsContainer.In(replicator);
-				const TArray<FCrPackageTransportConnectionData>* connArray = Fields::ConnectionsData.In(connContainer);
+				const Fields::StructArray connections(Fields::ConnectionsData.In(connContainer), Fields::ConnectionDataSize);
 
 				// The sender's NetID and Entity dwords, to match against each connection's sender.
-				const uint8_t* helper = reinterpret_cast<const uint8_t*>(&bestMatch->Entity);
+				const uint8_t* helper = reinterpret_cast<const uint8_t*>(Fields::SenderEntity.In(bestMatch));
 				const PluginFieldSpec& netIdField = Fields::HelperNetID;
 				const PluginFieldSpec& entityField = Fields::HelperEntity;
-				// Both dwords are read at a resolved offset inside the helper struct, whose
-				// size is checked against the running build.
+				// Both dwords are read at a resolved offset inside the helper struct, bounded
+				// by the size the loader reports for it on the running build.
 				constexpr int32_t kDword = sizeof(uint32_t);
-				if (!connArray || netIdField.offset < 0 || entityField.offset < 0 ||
-					netIdField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)) ||
-					entityField.offset + kDword > static_cast<int32_t>(sizeof(FCrMassEntityReplicationHelper)))
+				const int32_t helperSize = static_cast<int32_t>(Fields::HelperSize.size);
+				if (!helper || connections.Num() == 0 || netIdField.offset < 0 || entityField.offset < 0 ||
+					netIdField.offset + kDword > helperSize || entityField.offset + kDword > helperSize)
 					return true;
 				uint32_t netIdDword0 = *reinterpret_cast<const uint32_t*>(helper + netIdField.offset);
 				uint32_t netIdDword2 = *reinterpret_cast<const uint32_t*>(helper + entityField.offset);
 
-				for (int32_t i = 0; i < connArray->Num(); ++i)
+				for (int32_t i = 0; i < connections.Num(); ++i)
 				{
-					const FCrPackageTransportConnectionData& entry = (*connArray)[i];
-					const auto* sender = Fields::ConnectionSender.In(&entry);
+					const uint8_t* entry = connections.At(i);
+					const auto* sender = Fields::ConnectionSender.In(entry);
 					if (!sender)
 						break;
 					const uint8_t* senderBytes = reinterpret_cast<const uint8_t*>(sender);
@@ -138,14 +137,14 @@ namespace Waila
 					if (!matched)
 						continue;
 
-					UCrItemDataBase* connItem = Fields::ValueOr<UCrItemDataBase*>(Fields::ConnectionItem, &entry, nullptr);
+					UCrItemDataBase* connItem = Fields::ValueOr<UCrItemDataBase*>(Fields::ConnectionItem, entry, nullptr);
 					if (connItem && UKismetSystemLibrary::IsValid(connItem))
 					{
 						outInfo.sendingItem     = connItem;
 						outInfo.sendingItemName = Fields::DisplayNameOf(connItem);
 					}
 
-					float startSendTime = Fields::ValueOr<float>(Fields::ConnectionStartSendTime, &entry);
+					float startSendTime = Fields::ValueOr<float>(Fields::ConnectionStartSendTime, entry);
 					if (startSendTime > 0.f && outInfo.sendingTime > 0.f)
 					{
 						double serverTime = gameStateBase->GetServerWorldTimeSeconds();
