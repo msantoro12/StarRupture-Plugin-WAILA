@@ -440,7 +440,9 @@ namespace Waila::RailNetwork
 		// passed, a rail that starts there too is a branch, and the crafters its
 		// rails end at pull from the line ahead of this rail. Storage on a branch
 		// is a sink and not counted, a crafter ends the branch, and a branch that
-		// ends loose is not followed. Rails the walk itself used are left out, so
+		// ends loose is not followed. A crafter a walked rail ends at is left out.
+		// A rail that taps off a junction counts its sibling taps too: they share
+		// the line. Rails the walk itself used are left out, so
 		// a branch that finds its way back to the line adds nothing. A start that
 		// sits loose has no known branches.
 		Consumers FindConsumers(const Sources& upstream, size_t maxRails, size_t maxCrafters) const
@@ -450,7 +452,12 @@ namespace Waila::RailNetwork
 			std::vector<size_t>        queue;
 			std::unordered_set<size_t> found;
 			for (size_t used : upstream.walked)
+			{
 				seen[used] = true;
+				// The crafter a walked rail feeds is the stretch's own, not a branch.
+				if (m_end[used].kind == Port::Kind::Building)
+					found.insert(m_end[used].index);
+			}
 
 			auto branch = [&](const std::vector<size_t>& rails)
 			{

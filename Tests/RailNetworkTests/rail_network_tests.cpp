@@ -135,6 +135,24 @@ namespace
 		Check(ConsumersOf(scene, last) == std::set<size_t>{ m, n }, "after the second: m and n, not the crafter at the end");
 	}
 
+	// Two rails from one point into the same crafter: neither counts the crafter
+	// its own end feeds.
+	void TestConsumersLeaveOutOwnEnd()
+	{
+		Scene scene;
+		AddBuilding(scene, { 0, 0, 0 }, true);
+		const size_t z = AddBuilding(scene, { 3000, 5100, 0 }, true);
+		(void)z;
+		scene.AddPathPoint({ { "RailSocket0", { 1500, 0, 0 } }, { "RailSocket1", { 1554, 0, 0 } },
+		                     { "RailSocket2", { 1500, 80, 0 } } });
+		AddRail(scene, { 100, 0, 0 }, { 1500, 0, 0 });
+		const size_t a = AddRail(scene, { 1554, 0, 0 }, { 3000, 5000, 0 });
+		const size_t b = AddRail(scene, { 1500, 80, 0 }, { 3000, 5000, 0 });
+
+		Check(ConsumersOf(scene, a).empty(), "a rail does not count the crafter it feeds");
+		Check(ConsumersOf(scene, b).empty(), "nor does the rail beside it into the same crafter");
+	}
+
 	// Ends of a path point the game has not spawned join within kJoinTolerance.
 	void TestLooseEnds()
 	{
@@ -346,6 +364,7 @@ int main()
 	TestJunctionStorageAndInputs();
 	TestLooseEnds();
 	TestConsumersBranchOffTheLine();
+	TestConsumersLeaveOutOwnEnd();
 	TestJunctionInsideDrill();
 	TestLaneTracksStayApart();
 	TestPlatform(dir);

@@ -207,6 +207,8 @@ namespace Waila::RailMass
 		bool g_capacityResolved = false;
 		bool g_requestsResolved = false;
 		bool g_faulted          = false;
+		bool g_capacityFaulted  = false;
+		bool g_requestsFaulted  = false;
 
 		// Bounds on what one rail can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
@@ -499,8 +501,10 @@ namespace Waila::RailMass
 		}
 
 		// A bad pointer in the game's data must not take the game down.
+		// A fault turns off the reads that share `faulted`; the capacity and the
+		// request reads keep their own, so one of them failing leaves the rest.
 		template <class Fn>
-		bool Guarded(Fn&& fn)
+		bool Guarded(Fn&& fn, bool& faulted = g_faulted)
 		{
 			struct Call
 			{
@@ -522,8 +526,8 @@ namespace Waila::RailMass
 			const bool ok = Call::Run(&fn, [](void* ctx) { (*static_cast<Fn*>(ctx))(); }, &code);
 			if (!ok)
 			{
-				g_faulted = true;
-				LOG_WARN("RailMass: exception 0x%08lX while reading the Mass data; rail sources are off for this session", code);
+				faulted = true;
+				LOG_WARN("RailMass: exception 0x%08lX while reading the Mass data; this read is off for the session", code);
 			}
 			return ok;
 		}
@@ -629,12 +633,12 @@ namespace Waila::RailMass
 
 	bool CapacityAvailable()
 	{
-		return Available() && g_capacityResolved && g_capacityFeature.On() && g_getShared;
+		return Available() && !g_capacityFaulted && g_capacityResolved && g_capacityFeature.On() && g_getShared;
 	}
 
 	bool RequestsAvailable()
 	{
-		return Available() && g_requestsResolved && g_requestFeature.On();
+		return Available() && !g_requestsFaulted && g_requestsResolved && g_requestFeature.On();
 	}
 
 	Entity EntityOf(AActor* actor)
@@ -666,13 +670,13 @@ namespace Waila::RailMass
 	{
 		if (!CapacityAvailable())
 			return false;
-		return Guarded([&] { ReadCapacityImpl(rail, perMin); });
+		return Guarded([&] { ReadCapacityImpl(rail, perMin); }, g_capacityFaulted);
 	}
 
 	bool ReadRequests(Entity building, Requests& out)
 	{
 		if (!RequestsAvailable())
 			return false;
-		return Guarded([&] { ReadRequestsImpl(building, out); });
+		return Guarded([&] { ReadRequestsImpl(building, out); }, g_requestsFaulted);
 	}
 }
