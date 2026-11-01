@@ -81,6 +81,9 @@ namespace Waila::UI
 
 		constexpr size_t kInCols = 2;
 
+		// The line above each input tile that carries its items per minute.
+		constexpr float kInRateH = 14.0f;
+
 		// Measure() runs on the game thread, where there is no ImGui context and so
 		// no way to ask what a string is worth in pixels. Widths that decide the
 		// card's size are estimated from character counts instead, and Draw() clips
@@ -92,6 +95,14 @@ namespace Waila::UI
 		float EstimateW(const std::string& s, float font, float perChar = 0.55f)
 		{
 			return static_cast<float>(s.size()) * font * perChar;
+		}
+
+		bool HasInputRates(const CardModel& m)
+		{
+			for (const auto& in : m.inputs)
+				if (!in.rate.empty())
+					return true;
+			return false;
 		}
 
 		size_t InputRows(const CardModel& m)
@@ -124,11 +135,12 @@ namespace Waila::UI
 			// height shared between the rows.
 			const float byWidth  = (kInGridW - (static_cast<float>(kInCols) - 1.0f) * kRowGap)
 			                     / static_cast<float>(kInCols);
-			const float byHeight = (kRingD - (rows - 1.0f) * kRowGap) / rows;
+			const float rateH    = HasInputRates(m) ? kInRateH : 0.0f;
+			const float byHeight = (kRingD - (rows - 1.0f) * kRowGap) / rows - rateH;
 
 			f.tile   = Clamp((std::min)(byWidth, byHeight), kTileInMin, kTileInMax);
 			f.gridW  = cols * f.tile + (cols - 1.0f) * kRowGap;
-			f.stackH = rows * f.tile + (rows - 1.0f) * kRowGap;
+			f.stackH = rows * (f.tile + rateH) + (rows - 1.0f) * kRowGap;
 			f.rowH   = (std::max)(kRingD, f.stackH) + 14.0f;
 			f.bodyH  = f.rowH;
 
@@ -265,24 +277,6 @@ namespace Waila::UI
 			return r;
 		}
 
-		// The ingredient rows under a crafter's flow: icon, name and one figure.
-		float InputRowsHeight(const CardModel& m)
-		{
-			return m.inputRates.empty() ? 0.0f : static_cast<float>(m.inputRates.size()) * kRateRowH;
-		}
-
-		float InputRowsWidth(const CardModel& m)
-		{
-			float name = 0.0f;
-			float now  = 0.0f;
-			for (const auto& row : m.inputRates)
-			{
-				name = (std::max)(name, EstimateW(row.name, kFontLabel));
-				now  = (std::max)(now,  EstimateW(row.now,  kFontLabel));
-			}
-			return m.inputRates.empty() ? 0.0f : kRateIcon + kRateGap + name + kRateColGap + now;
-		}
-
 		float RateBodyHeight(const CardModel& m)
 		{
 			return static_cast<float>((std::max)(m.rates.size(), size_t(1))) * kRateRowH + 6.0f;
@@ -365,7 +359,7 @@ namespace Waila::UI
 	{
 		const FlowMetrics f = MeasureFlow(model);
 
-		const float bodyW = model.hasFlow  ? (std::max)(FlowGroupWidth(model, f), InputRowsWidth(model))
+		const float bodyW = model.hasFlow  ? FlowGroupWidth(model, f)
 		                 : model.hasRates ? RateBodyWidth(model)
 		                 : StatBodyWidth(model);
 		const float baseW = Clamp((std::max)(bodyW, HeaderWidth(model)) + kPadX * 2.0f,
@@ -373,7 +367,7 @@ namespace Waila::UI
 
 		float h = kStrip + kHeaderH;
 
-		h += model.hasFlow ? f.bodyH + InputRowsHeight(model) : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
+		h += model.hasFlow ? f.bodyH : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
 
 		if (HasFooter(model))
 			h += kFooterH;
@@ -453,6 +447,7 @@ namespace Waila::UI
 			const float rounding  = (std::max)(6.0f, f.tile * 0.18f);
 			const float badgeFont = Draw::CountBadgeFont(f.tile * s);
 			const float gridX     = x + (kInGridW - f.gridW) * 0.5f * s;
+			const float rateH     = HasInputRates(m) ? kInRateH : 0.0f;
 			const float gridY     = cy - f.stackH * s * 0.5f;
 
 			for (size_t i = 0; i < m.inputs.size(); ++i)
@@ -460,10 +455,15 @@ namespace Waila::UI
 				const FlowSlot& in = m.inputs[i];
 
 				const float tx = gridX + (f.tile + kRowGap) * s * static_cast<float>(i % kInCols);
-				const float ty = gridY + (f.tile + kRowGap) * s * static_cast<float>(i / kInCols);
+				const float ty = gridY + (rateH + f.tile + kRowGap) * s * static_cast<float>(i / kInCols) + rateH * s;
 
 				const Rect tile = { tx, ty, tx + f.tile * s, ty + f.tile * s };
 				Draw::IconTile(ui, dl, tile, in.icon, pal, rounding * s, in.dim ? 0.45f : 1.0f, true);
+
+				if (!in.rate.empty())
+					Draw::TextCentered(ui, dl, (tile.x0 + tile.x1) * 0.5f, tile.y0 - rateH * s,
+						in.rate.c_str(), in.tone == Health::Idle ? pal.textMuted : Theme::Of(pal, in.tone),
+						kFontTiny * s);
 
 				// A starved input gets a red keyline as well as the dimming, so it
 				// still reads when the icon itself is dark.
@@ -691,38 +691,6 @@ namespace Waila::UI
 		}
 	}
 
-	namespace
-	{
-		void DrawInputRows(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& m,
-		                   const Palette& pal, float s, const Rect& r, float bodyTop)
-		{
-			const float left  = r.x0 + kPadX * s;
-			const float right = r.x1 - kPadX * s;
-
-			float nowW = 0.0f;
-			for (const auto& row : m.inputRates)
-				nowW = (std::max)(nowW, EstimateW(row.now, kFontLabel));
-			const float nameMaxW = right - (nowW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
-
-			for (size_t i = 0; i < m.inputRates.size(); ++i)
-			{
-				const RateRow& row = m.inputRates[i];
-				const float midY  = bodyTop + kRateRowH * s * (static_cast<float>(i) + 0.5f);
-				const float textY = midY - kFontLabel * 0.5f * s;
-
-				Draw::IconBare(ui, dl, { left, midY - kRateIcon * 0.5f * s,
-				                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
-					row.icon, pal, 1.0f);
-
-				Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s, textY, nameMaxW,
-					row.name.c_str(), pal.textPrimary, kFontLabel * s);
-
-				const Color nowColor = row.tone == Health::Idle ? pal.textPrimary : Theme::Of(pal, row.tone);
-				Draw::TextRight(ui, dl, right, textY, row.now.c_str(), nowColor, kFontLabel * s);
-			}
-		}
-	}
-
 	void Card::Draw(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& model,
 	                const Palette& pal, float scale, const Rect& rect)
 	{
@@ -740,8 +708,6 @@ namespace Waila::UI
 		{
 			DrawFlowBody(ui, dl, model, pal, s, rect, bodyTop);
 			bodyTop += MeasureFlow(model).bodyH * s;
-			DrawInputRows(ui, dl, model, pal, s, rect, bodyTop);
-			bodyTop += InputRowsHeight(model) * s;
 		}
 		else if (model.hasRates)
 		{

@@ -29,6 +29,7 @@ namespace Waila::UI
 		std::string         label;
 		Health              tone = Health::Idle;
 		bool                dim  = false;   // input the machine hasn't got
+		std::string         rate;           // "N/min", drawn above the tile; empty for none
 	};
 
 	// A figure with a short caption, used by buildings that have no recipe to draw.
@@ -82,7 +83,6 @@ namespace Waila::UI
 		std::string           rateValue;   // "24"
 		std::string           rateUnit;    // "/min"
 		std::string           rateSub;     // "5.0s cycle"
-		std::vector<RateRow>  inputRates;  // one per ingredient, `now` holds "N/min"
 
 		// Stat body — for buildings with nothing to craft.
 		std::vector<FlowSlot> stock;      // every entry has an icon
