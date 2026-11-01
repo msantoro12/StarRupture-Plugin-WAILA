@@ -211,6 +211,25 @@ namespace Waila::UI
 		}
 
 		out.outputName = recipeName;
+
+		// What the machine takes in a minute, one row per ingredient. A stalled
+		// machine takes nothing, the same as the output figure above.
+		for (const auto& in : info.recipeInputs)
+		{
+			if (in.perMin < 0.0f)
+				continue;
+
+			char num[24];
+			Draw::FormatNumber(num, sizeof(num), out.status == Health::Bad ? 0.0f : in.perMin);
+
+			RateRow row;
+			row.icon = in.itemData ? Icons::ForItem(in.itemData) : Icons::ForItemClass(in.itemClass);
+			row.name = in.displayName;
+			row.now  = std::string(num) + "/min";
+			if (out.status == Health::Bad)
+				row.tone = Health::Bad;
+			out.inputRates.push_back(std::move(row));
+		}
 	}
 
 	// -------------------------------------------------------------------------

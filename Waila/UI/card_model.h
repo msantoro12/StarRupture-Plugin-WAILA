@@ -82,6 +82,7 @@ namespace Waila::UI
 		std::string           rateValue;   // "24"
 		std::string           rateUnit;    // "/min"
 		std::string           rateSub;     // "5.0s cycle"
+		std::vector<RateRow>  inputRates;  // one per ingredient, `now` holds "N/min"
 
 		// Stat body — for buildings with nothing to craft.
 		std::vector<FlowSlot> stock;      // every entry has an icon

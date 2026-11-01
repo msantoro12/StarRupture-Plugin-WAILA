@@ -265,6 +265,24 @@ namespace Waila::UI
 			return r;
 		}
 
+		// The ingredient rows under a crafter's flow: icon, name and one figure.
+		float InputRowsHeight(const CardModel& m)
+		{
+			return m.inputRates.empty() ? 0.0f : static_cast<float>(m.inputRates.size()) * kRateRowH;
+		}
+
+		float InputRowsWidth(const CardModel& m)
+		{
+			float name = 0.0f;
+			float now  = 0.0f;
+			for (const auto& row : m.inputRates)
+			{
+				name = (std::max)(name, EstimateW(row.name, kFontLabel));
+				now  = (std::max)(now,  EstimateW(row.now,  kFontLabel));
+			}
+			return m.inputRates.empty() ? 0.0f : kRateIcon + kRateGap + name + kRateColGap + now;
+		}
+
 		float RateBodyHeight(const CardModel& m)
 		{
 			return static_cast<float>((std::max)(m.rates.size(), size_t(1))) * kRateRowH + 6.0f;
@@ -347,7 +365,7 @@ namespace Waila::UI
 	{
 		const FlowMetrics f = MeasureFlow(model);
 
-		const float bodyW = model.hasFlow  ? FlowGroupWidth(model, f)
+		const float bodyW = model.hasFlow  ? (std::max)(FlowGroupWidth(model, f), InputRowsWidth(model))
 		                 : model.hasRates ? RateBodyWidth(model)
 		                 : StatBodyWidth(model);
 		const float baseW = Clamp((std::max)(bodyW, HeaderWidth(model)) + kPadX * 2.0f,
@@ -355,7 +373,7 @@ namespace Waila::UI
 
 		float h = kStrip + kHeaderH;
 
-		h += model.hasFlow ? f.bodyH : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
+		h += model.hasFlow ? f.bodyH + InputRowsHeight(model) : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
 
 		if (HasFooter(model))
 			h += kFooterH;
@@ -673,6 +691,38 @@ namespace Waila::UI
 		}
 	}
 
+	namespace
+	{
+		void DrawInputRows(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& m,
+		                   const Palette& pal, float s, const Rect& r, float bodyTop)
+		{
+			const float left  = r.x0 + kPadX * s;
+			const float right = r.x1 - kPadX * s;
+
+			float nowW = 0.0f;
+			for (const auto& row : m.inputRates)
+				nowW = (std::max)(nowW, EstimateW(row.now, kFontLabel));
+			const float nameMaxW = right - (nowW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
+
+			for (size_t i = 0; i < m.inputRates.size(); ++i)
+			{
+				const RateRow& row = m.inputRates[i];
+				const float midY  = bodyTop + kRateRowH * s * (static_cast<float>(i) + 0.5f);
+				const float textY = midY - kFontLabel * 0.5f * s;
+
+				Draw::IconBare(ui, dl, { left, midY - kRateIcon * 0.5f * s,
+				                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
+					row.icon, pal, 1.0f);
+
+				Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s, textY, nameMaxW,
+					row.name.c_str(), pal.textPrimary, kFontLabel * s);
+
+				const Color nowColor = row.tone == Health::Idle ? pal.textPrimary : Theme::Of(pal, row.tone);
+				Draw::TextRight(ui, dl, right, textY, row.now.c_str(), nowColor, kFontLabel * s);
+			}
+		}
+	}
+
 	void Card::Draw(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& model,
 	                const Palette& pal, float scale, const Rect& rect)
 	{
@@ -690,6 +740,8 @@ namespace Waila::UI
 		{
 			DrawFlowBody(ui, dl, model, pal, s, rect, bodyTop);
 			bodyTop += MeasureFlow(model).bodyH * s;
+			DrawInputRows(ui, dl, model, pal, s, rect, bodyTop);
+			bodyTop += InputRowsHeight(model) * s;
 		}
 		else if (model.hasRates)
 		{

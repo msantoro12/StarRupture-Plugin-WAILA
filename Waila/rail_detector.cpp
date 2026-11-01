@@ -1,6 +1,7 @@
 #include "rail_detector.h"
 #include "rail_network.h"
 #include "rail_mass.h"
+#include "crafter_detector.h"
 #include "plugin_helpers.h"
 #include "waila_functions.h"
 #include "waila_fields.h"
@@ -66,18 +67,6 @@ namespace Waila
 		};
 
 		Cache g_cache;
-
-		// Items per minute of count items per craft of a recipe at a crafting
-		// speed: count / BuildTime x speed x 60.
-		bool CountRate(UAuItemRecipeData* recipe, int32_t count, float speed, float& outRate)
-		{
-			const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
-			if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
-				return false;
-
-			outRate = static_cast<float>(count) / buildTime * speed * 60.0f;
-			return true;
-		}
 
 		// Items per minute of one recipe at a crafting speed: output count /
 		// BuildTime x speed x 60. countOverride (when above 0) replaces the

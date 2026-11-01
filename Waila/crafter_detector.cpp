@@ -9,6 +9,7 @@
 #include "AuCrafting_structs.hpp"
 #include "AuItems_classes.hpp"
 
+#include <cmath>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +66,16 @@ namespace Waila
 		}
 	}
 
+	bool CountRate(UAuItemRecipeData* recipe, int32_t count, float speed, float& outRate)
+	{
+		const float buildTime = Fields::ValueOr<float>(Fields::RecipeBuildTime, recipe);
+		if (count <= 0 || buildTime <= 0.0f || !(speed > 0.0f) || !std::isfinite(speed))
+			return false;
+
+		outRate = static_cast<float>(count) / buildTime * speed * 60.0f;
+		return true;
+	}
+
 	bool CrafterDetector::IsCrafter(AActor* actor)
 	{
 		if (!actor || !UKismetSystemLibrary::IsValid(actor))
@@ -105,6 +116,7 @@ namespace Waila
 		outInfo.currentRecipe = "(idle)";
 
 		UCrCraftingComponent* comp = Fields::ValueOr<UCrCraftingComponent*>(Fields::CraftComponent, crafter, nullptr);
+		UAuItemRecipeData* activeRecipe = nullptr;
 
 		if (comp)
 		{
@@ -129,6 +141,7 @@ namespace Waila
 				// own input store, so a starved machine can be spotted without
 				// opening it.
 				UAuItemRecipeData* recipe = first.recipe;
+				activeRecipe = recipe;
 
 				std::unordered_map<std::string, int32_t> stock;
 				const bool stockKnown = ReadInputStock(building, stock);
@@ -167,8 +180,22 @@ namespace Waila
 					outInfo.craftingMultiplier = Fields::ValueOr<int32_t>(Fields::FragMultiplier, frag, outInfo.craftingMultiplier);
 					outInfo.bMissingItems      = Fields::ValueOr<bool>(Fields::FragMissingItems, frag);
 					outInfo.bOutputFull        = Fields::ValueOr<bool>(Fields::FragOutputFull, frag);
+
+					// The live speed, as the rail card takes it; the settings value
+					// above stands in when the fragment can't be read.
+					const float liveSpeed = Fields::ValueOr<float>(Fields::FragSpeed, frag);
+					if (liveSpeed > 0.0f)
+						outInfo.craftingSpeed = liveSpeed;
 				}
 			}
+		}
+
+		// What each ingredient costs a minute, once the live speed is known.
+		for (RecipeItemEntry& entry : outInfo.recipeInputs)
+		{
+			float rate = 0.0f;
+			if (activeRecipe && CountRate(activeRecipe, entry.need, outInfo.craftingSpeed, rate))
+				entry.perMin = rate;
 		}
 
 		return true;
