@@ -147,13 +147,6 @@ namespace Waila::RailMass
 			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
 		};
 
-		// UMassEntitySubsystem::EntityManager is not a reflected member: the
-		// loader's map has its row per build (a TSharedPtr, 16 bytes). The
-		// offset here is the one CL-127004 has, used only when the running build
-		// is that one and the map has no row.
-		PluginFieldSpec g_entityManager{ "UMassEntitySubsystem::EntityManager", "UMassEntitySubsystem",
-			"EntityManager", PLUGIN_FIELD_NATIVE, 16, 0x38 };
-
 		// The three fragments' reflection objects, found by name on first use.
 		const UScriptStruct* g_lineStruct     = nullptr;
 		const UScriptStruct* g_agentStruct    = nullptr;
@@ -246,7 +239,7 @@ namespace Waila::RailMass
 			if (!world)
 				return nullptr;
 			const uint8_t* subsystem = static_cast<const uint8_t*>(g_getSubsystem(world));
-			return subsystem ? ReadAt<const void*>(subsystem, g_entityManager.offset) : nullptr;
+			return PluginMap::MassEntityManagerOf(subsystem);
 		}
 
 		// A built, current entity's fragment, or null.
@@ -380,7 +373,7 @@ namespace Waila::RailMass
 		}
 	}
 
-	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
+	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner, const std::vector<const char*>& alsoNeeds)
 	{
 		std::vector<const char*>& keys = g_feature.keys;
 		keys.clear();
@@ -389,11 +382,12 @@ namespace Waila::RailMass
 		for (const Member* member : kMembers)
 			keys.push_back(member->spec.key);
 		keys.push_back(Fields::HelperEntity.key);
-		keys.push_back(g_entityManager.key);
+		keys.push_back(PluginMap::MassEntityManagerField.key);
 		keys.push_back(kKeyGetSubsystem);
 		keys.push_back(kKeyGetFragment);
 		keys.push_back(kKeyIsValid);
 		keys.push_back(kKeyIsBuilt);
+		keys.insert(keys.end(), alsoNeeds.begin(), alsoNeeds.end());
 		return PluginMap::DeclareFeatures(scanner, self, g_feature);
 	}
 
@@ -415,7 +409,7 @@ namespace Waila::RailMass
 			member->spec.size = size;
 			all = PluginMap::ResolveField(scanner, self, member->spec) && all;
 		}
-		all = PluginMap::ResolveField(scanner, self, g_entityManager) && all;
+		all = PluginMap::ResolveMassEntityManager(scanner, self) && all;
 
 		const uintptr_t getSubsystem = ResolveFunction(scanner, self, kKeyGetSubsystem, kPatGetSubsystem, kAtGetSubsystem);
 		const uintptr_t getFragment  = ResolveFunction(scanner, self, kKeyGetFragment, kPatGetFragment, kAtGetFragment);

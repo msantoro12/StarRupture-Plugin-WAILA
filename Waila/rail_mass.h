@@ -23,9 +23,10 @@ namespace Waila::RailMass
 	// low half, SerialNumber in the high half. 0 is no entity.
 	using Entity = uint64_t;
 
-	// Declares the "rail sources" feature with every key the reader needs.
-	// Call first in OnPluginLoadHooks, with the other features.
-	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner);
+	// Declares the "rail sources" feature with every key the reader needs, and
+	// `alsoNeeds`, the keys of the parts it builds on (the building and item
+	// names it shows). Call first in OnPluginLoadHooks, with the other features.
+	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner, const std::vector<const char*>& alsoNeeds);
 
 	// Asks the loader for those keys. Call from OnPluginLoadHooks, after
 	// Fields::Resolve and the declaration. A miss turns the feature off and

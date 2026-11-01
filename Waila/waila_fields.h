@@ -14,6 +14,7 @@
 #include "plugin_helpers.h"
 #include "rail_mass.h"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -130,30 +131,14 @@ namespace Waila::Fields
 			"UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal";
 	}
 
-	// The map keys of a feature's fields, as the loader sees them.
-	inline void AddKey(std::vector<const char*>& keys, const char* key) { keys.push_back(key); }
-	inline void AddKey(std::vector<const char*>& keys, const PluginFieldSpec& field) { keys.push_back(field.key); }
-
-	template <class... Key>
-	std::vector<const char*> KeysOf(const Key&... keys)
-	{
-		std::vector<const char*> all;
-		(AddKey(all, keys), ...);
-		return all;
-	}
+	// The SDK's helpers, under the names the detectors use.
+	using PluginMap::KeysOf;
+	using PluginMap::ValueOr;
 
 	// Asks the loader for every row above. False when any did not resolve; the
 	// loader has then recorded the failure, and turns off the feature that
 	// lists the key (or refuses the plugin, for a key no feature lists).
 	bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner);
-
-	// The member's value, or a default when the member did not resolve.
-	template <class T, class Object>
-	T ValueOr(const PluginField<T>& field, const Object* object, T fallback = T{})
-	{
-		const T* at = field.In(static_cast<const void*>(object));
-		return at ? *at : fallback;
-	}
 
 	// Asks the loader for a StructSize row's size. False when it did not resolve.
 	inline bool ResolveSize(IPluginHookScanner* scanner, const IPluginSelf* self, PluginFieldSpec& row)
@@ -302,58 +287,81 @@ namespace Waila::Fields
 	}
 }
 
-// The parts of WAILA that can be off while the rest runs. Each lists the keys
-// only it needs. Buildings (a building's name and description, and the power
-// and cooler cards) and Items (item names and what a container holds) sit under
-// every card that names a building or lists items, so each card checks the
-// parts it builds on: a crafter needs Buildings, Items and Crafters; a drone
-// rail also needs Drone rails; a package sender needs Package transport, and a
-// receiver needs Buildings and Items. Declared in OnPluginLoadHooks before any
-// key is resolved. WAILA's config has no entry that belongs to one part.
+// The parts of WAILA that can be off while the rest runs. A key is listed in
+// every part that uses it, so its miss turns off exactly those. Buildings (a
+// building's name and description, and the power and cooler cards) and Items
+// (item names and what a container holds) sit under every card that names a
+// building or lists items, so Items lists Buildings' keys too; a crafter card
+// adds Crafters' keys, a drone rail Drone rails', a package sender Package
+// transport's, and the rail sources (rail_mass.cpp) Items'. Declared in
+// OnPluginLoadHooks before any key is resolved. WAILA's config has no entry
+// that belongs to one part.
 namespace Waila::Features
 {
 	using namespace Waila::Fields;
 
-	inline PluginMap::Feature Buildings{ "buildings", "Building names and descriptions",
-		KeysOf(PlacementData, BuildingName, BuildingDesc, BuildingIcon, PlacementSockets, PlacementSocketSize,
-			SocketUseCount), {} };
+	using KeyList = std::vector<const char*>;
 
-	inline PluginMap::Feature Items{ "items", "Item names and stored items",
+	// The lists joined, each key once.
+	template <class... List>
+	KeyList Join(const List&... lists)
+	{
+		KeyList all;
+		for (const KeyList* list : { static_cast<const KeyList*>(&lists)... })
+		{
+			for (const char* key : *list)
+			{
+				if (std::find_if(all.begin(), all.end(), [key](const char* have) { return std::strcmp(have, key) == 0; }) == all.end())
+					all.push_back(key);
+			}
+		}
+		return all;
+	}
+
+	inline const KeyList BuildingKeys = KeysOf(PlacementData, BuildingName, BuildingDesc, BuildingIcon,
+		PlacementSockets, PlacementSocketSize, SocketUseCount);
+
+	inline const KeyList ItemKeys = Join(BuildingKeys,
 		KeysOf(Keys::GetStoredItemsContainerInternal, ItemName, UniqueItemName, ItemIcon, ItemStorage, GridColumns,
-			GridRows, StorageItems, SlotDisabled, SlotItem, SimpleItemCount, SimpleItemData, StorageItemSize), {} };
+			GridRows, StorageItems, SlotDisabled, SlotItem, SimpleItemCount, SimpleItemData, StorageItemSize));
 
-	inline PluginMap::Feature Crafters{ "crafters", "Crafter recipes and progress",
+	inline const KeyList CrafterKeys = Join(ItemKeys,
 		KeysOf(Keys::GetCraftingFragment, CraftComponent, CraftingSettings, SettingsSpeed, ItemsToCraft,
 			NeededResources, RecipeOutputItem, RecipeBuildTime, RecipeIcon, InItemStorage, SimpleItemCount,
 			QueuedRecipe, QueuedOutput, OrderItem, OrderCount, FragMultiplier, FragMissingItems, FragOutputFull,
-			FragSelected, FragSpeed, CraftItemSize, RecipeOrderSize), {} };
+			FragSelected, FragSpeed, CraftItemSize, RecipeOrderSize));
+
+	inline PluginMap::Feature Buildings{ "buildings", "Building names and descriptions", BuildingKeys, {} };
+
+	inline PluginMap::Feature Items{ "items", "Item names and stored items", ItemKeys, {} };
+
+	inline PluginMap::Feature Crafters{ "crafters", "Crafter recipes and progress", CrafterKeys, {} };
 
 	inline PluginMap::Feature DroneRails{ "drone-rails", "Drone rails",
-		KeysOf(SocketsData, Spline, SocketRef, SocketTransform, SocketDataSize), {} };
+		Join(CrafterKeys, KeysOf(SocketsData, Spline, SocketRef, SocketTransform, SocketDataSize)), {} };
 
 	inline PluginMap::Feature PackageTransport{ "package-transport", "Package transport",
-		KeysOf(PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
+		Join(ItemKeys, KeysOf(PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
 			ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
 			HelperNetID, HelperEntity, HelperSize, SenderIsSender, SenderLocation, SenderItemType, SenderEntity,
-			SenderReceiverSize, ConnectionDataSize), {} };
+			SenderReceiverSize, ConnectionDataSize)), {} };
 
 	// Declares them all. Call first in OnPluginLoadHooks. The rail sources
-	// feature (rail_mass.cpp) lists its own keys, which are many and live with
-	// the code that reads them.
+	// feature (rail_mass.cpp) lists the keys of its own reader, which are many
+	// and live with the code that reads them, and the Items keys it builds on.
 	inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
 		const bool listed = PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport);
-		return RailMass::Declare(self, scanner) && listed;
+		return RailMass::Declare(self, scanner, ItemKeys) && listed;
 	}
 
-	// What each card can show: the parts it builds on must all be on.
+	// What each card can show: every key it uses is on.
 	inline bool ShowBuildings()        { return Buildings.On(); }
-	inline bool ShowItems()            { return Buildings.On() && Items.On(); }
-	inline bool ShowCrafters()         { return ShowItems() && Crafters.On(); }
-	inline bool ShowDroneRails()       { return ShowCrafters() && DroneRails.On(); }
-	inline bool ShowPackageTransport() { return ShowItems() && PackageTransport.On(); }
+	inline bool ShowItems()            { return Items.On(); }
+	inline bool ShowCrafters()         { return Crafters.On(); }
+	inline bool ShowDroneRails()       { return DroneRails.On(); }
+	inline bool ShowPackageTransport() { return PackageTransport.On(); }
 
-	// A drone rail's sources and destinations from the game's Mass data. A card
-	// that names a building and an item builds on Buildings and Items.
-	inline bool ShowRailSources()      { return ShowItems() && RailMass::Available(); }
+	// A drone rail's sources and destinations from the game's Mass data.
+	inline bool ShowRailSources()      { return RailMass::Available(); }
 }
