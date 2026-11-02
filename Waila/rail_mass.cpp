@@ -350,7 +350,6 @@ namespace Waila::RailMass
 			std::vector<Entity> drones;
 			const uint8_t* state = line + mLineState.Offset();
 			AddDrones(state, mOrderedItems.Offset(), kLineItemSize.size, mLineItemEntity.Offset(), world, drones);
-			const size_t onLane = drones.size();
 			AddDrones(state, mWaitingItems.Offset(), kWaitingSize.size, mWaitingEntity.Offset(), world, drones);
 
 			for (size_t d = 0; d < drones.size(); ++d)
@@ -359,12 +358,11 @@ namespace Waila::RailMass
 				const uint8_t* agent = Fragment(manager, drone, g_agentStruct);
 				if (!agent)
 					continue;
-				++out.drones;
 
 				// What the drone carries.
 				UAuItemDataBase* item = ItemOf(agent + mCarriedItem.Offset());
 				const bool carried = item != nullptr;
-				if (carried && d < onLane)
+				if (carried)
 					out.lane.push_back(Carrying{ drone, item });
 
 				const Entity requestEntity = HandleOf(agent + mRequestUId.Offset(), world);

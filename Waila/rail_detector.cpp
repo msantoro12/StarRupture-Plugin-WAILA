@@ -353,10 +353,13 @@ namespace Waila
 
 		// A rail being watched: every rail aimed at in the last kWatchFor, by its
 		// Mass entity (index and serial, checked by every read), loaded or not.
-		// Sampled on the game tick every kSampleEvery whether or not its card is
-		// up: the ends of every drone seen on it are kept, and the meter counts the
-		// items that cross it. Items are held as weak pointers, resolved on use.
+		// Sampled on the game tick, every tick while it is aimed at and every
+		// kSampleEvery after, card up or not: the ends of every drone seen on it
+		// are kept, and the meter counts the items that cross it. A drone counts
+		// from when it waits to join, so one that crosses a short lane between
+		// samples is still seen. Items are held as weak pointers, resolved on use.
 		constexpr std::chrono::milliseconds kSampleEvery{ 200 };
+		constexpr std::chrono::seconds      kAimedNow{ 1 };
 		constexpr std::chrono::seconds      kWatchFor{ 90 };
 		constexpr size_t                    kMaxWatches = 4;
 
@@ -366,7 +369,6 @@ namespace Waila
 			std::chrono::steady_clock::time_point     aimed{};
 			std::chrono::steady_clock::time_point     sampled{};
 			std::chrono::steady_clock::time_point     refreshed{};
-			bool                                      railFound = false;
 			bool                                      truncated = false;   // more buildings than kMaxPeers were seen
 			float                                     capacity  = -1.0f;   // items a minute; negative when unread
 			std::vector<MassPeer>                     peers;
@@ -497,7 +499,6 @@ namespace Waila
 			if (!RailMass::Observe(w.rail, seen) || !seen.railFound)
 				return false;
 
-			w.railFound = true;
 			Merge(w, seen);
 
 			std::vector<RailNetwork::FlowMeter::OnLane> lane;
@@ -527,9 +528,11 @@ namespace Waila
 		}
 
 		// The rail's watch, started when it is first aimed at. Null when the rail
-		// has no Mass entity or its lane cannot be read.
-		Watch* WatchOf(AActor* rail, std::chrono::steady_clock::time_point now)
+		// has no Mass entity or its lane cannot be read. started is set when the
+		// watch is new, which also means it was just refreshed.
+		Watch* WatchOf(AActor* rail, std::chrono::steady_clock::time_point now, bool& started)
 		{
+			started = false;
 			const RailMass::Entity entity = RailMass::EntityOf(rail);
 			if (!entity)
 				return nullptr;
@@ -537,15 +540,16 @@ namespace Waila
 			auto found = std::find_if(g_watches.begin(), g_watches.end(), [&](const Watch& w) { return w.rail == entity; });
 			if (found == g_watches.end())
 			{
-				if (g_watches.size() >= kMaxWatches)
-					g_watches.erase(std::min_element(g_watches.begin(), g_watches.end(),
-						[](const Watch& a, const Watch& b) { return a.aimed < b.aimed; }));
 				Watch w;
 				w.rail = entity;
 				if (!Sample(w, now))
 					return nullptr;
 				Refresh(w, now);
+				if (g_watches.size() >= kMaxWatches)
+					g_watches.erase(std::min_element(g_watches.begin(), g_watches.end(),
+						[](const Watch& a, const Watch& b) { return a.aimed < b.aimed; }));
 				g_watches.push_back(std::move(w));
+				started = true;
 				found = g_watches.end() - 1;
 			}
 			found->aimed = now;
@@ -608,7 +612,8 @@ namespace Waila
 			{
 				if (now - w.aimed >= kWatchFor)
 					return true;
-				return now - w.sampled >= kSampleEvery && !Sample(w, now);
+				const bool due = now - w.aimed < kAimedNow || now - w.sampled >= kSampleEvery;
+				return due && !Sample(w, now);
 			}), g_watches.end());
 	}
 
@@ -646,9 +651,7 @@ namespace Waila
 		bool massRefreshed = false;
 		if (Features::ShowRailSources())
 		{
-			const size_t before = g_watches.size();
-			watch = WatchOf(actor, now);
-			massRefreshed = g_watches.size() != before;
+			watch = WatchOf(actor, now, massRefreshed);
 			if (watch && !massRefreshed && now - watch->refreshed >= kRefresh)
 			{
 				Refresh(*watch, now);

@@ -53,7 +53,7 @@ namespace Waila::RailMass
 		bool                   carried = false;  // the drone has the item; false: still on its way to pick it up
 	};
 
-	// A drone moving on the lane with an item.
+	// A drone on the lane, or waiting to join it, with an item.
 	struct Carrying
 	{
 		Entity                drone = 0;
@@ -63,9 +63,8 @@ namespace Waila::RailMass
 	struct Observation
 	{
 		bool                  railFound  = false;   // the rail has a lane fragment
-		int32_t               drones     = 0;       // drones on the lane or waiting to join it, right now
 		std::vector<Peer>     peers;
-		std::vector<Carrying> lane;                 // the drones moving on the lane that carry an item
+		std::vector<Carrying> lane;                 // the drones on or joining the lane that carry an item
 	};
 
 	// What a crafter's Mass fragment says. isCrafter is false for storage and
