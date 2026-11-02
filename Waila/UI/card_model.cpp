@@ -332,8 +332,9 @@ namespace Waila::UI
 	namespace
 	{
 		// Where the rail's items come from, then where they go, under the item
-		// rates, in the rows left. A crafter shows what it makes or takes now; storage and
-		// stations have no rate, and min and max are the rail's, so those stay blank.
+		// rates, in the rows left. A crafter shows what it makes or takes running
+		// full out under max and right now under now, summed over the line; storage
+		// and stations have no rate, and min is the rail's, so those stay blank.
 		// Returns the rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
 		{
@@ -348,6 +349,8 @@ namespace Waila::UI
 				row.name = std::string(p.source ? "From " : "To ")
 					+ (p.count > 1 ? std::to_string(p.count) + "x " : std::string()) + p.buildingName
 					+ (p.itemName.empty() ? std::string() : ": " + p.itemName);
+				if (p.perMinFull >= 0.0f)
+					row.max = PerMin(p.perMinFull);
 				if (p.perMinNow >= 0.0f)
 				{
 					row.now = PerMin(p.perMinNow);
@@ -376,11 +379,11 @@ namespace Waila::UI
 			row.icon = Icons::ForItem(r.itemData);
 			row.name = r.displayName;
 			row.min  = PerMin(r.perMinMin);
-			row.now  = PerMin(r.perMinNow);
+			row.now  = r.measuring ? "..." : PerMin(r.perMinNow);
 			row.max  = PerMin(r.perMinMax);
 
-			// Red when nothing is left for this stretch right now.
-			if (r.perMinNow == 0.0f)
+			// Red when none crossed the rail over the last minute.
+			if (!r.measuring && r.perMinNow == 0.0f)
 				row.tone = Health::Bad;
 			out.rates.push_back(std::move(row));
 		}
@@ -407,9 +410,11 @@ namespace Waila::UI
 		out.footLeft = "items / min: min, now, max";
 		if (more > 0)
 		{
-			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
+			snprintf(buf, sizeof(buf), "%s+%d more", info.measuring ? "measuring, " : "", static_cast<int>(more));
 			out.footRight = buf;
 		}
+		else if (info.measuring)
+			out.footRight = "measuring...";
 	}
 
 	// -------------------------------------------------------------------------

@@ -580,13 +580,13 @@ namespace Waila::RailNetwork
 		uint64_t    building  = 0;
 		std::string item;               // the item's unique name
 		bool        source    = false;  // false: it takes the item off the line
-		bool        crafter   = true;   // false: storage or a station, which has no rate of its own
+		bool        crafter   = true;   // false: storage, a station, or a crafter handing out what it does not make
 		float       full      = -1.0f;  // a crafter's items a minute running full out; negative when unread
-		bool        requestsKnown = false;   // a taking crafter: its requests could be read
-		bool        requesting    = false;   // ...and it is asking the drones for the item now
+		float       now       = -1.0f;  // ...and right now, 0 while it is stalled; negative when unread
+		std::string name;               // the building's name, which the From/To lines group by
 	};
 
-	// The three potentials of one item, items a minute; negative when unknown.
+	// The totals of one item, items a minute; negative when unknown.
 	struct ItemFlow
 	{
 		std::string item;
@@ -595,28 +595,26 @@ namespace Waila::RailNetwork
 		float       output    = 0.0f;   // the crafters' output, uncapped; orders the rows
 		float       max       = -1.0f;  // the sources' output, capped by the rail
 		float       min       = -1.0f;  // left with every taking crafter running full out
-		float       now       = -1.0f;  // left given the ones asking for it now
 	};
 
 	// Sums the parts into one flow per item that has a source, biggest output
 	// first. capacity is what the rail carries in items a minute (negative when
-	// unread, which leaves max unknown); requests says whether the requests are
-	// read at all.
+	// unread, which leaves max unknown).
 	//
 	// Supply is the source crafters' output, capped by the capacity. A source
 	// crafter whose rate is unread makes the whole item unknown. An item that
-	// only comes out of storage or stations is supplied as fast as the rail
-	// carries it. Storage and stations taking the item have no rate, so they
-	// count as buildings and nothing else.
-	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity, bool requests)
+	// only comes out of stock (storage, stations, a crafter handing out what it
+	// does not make) is supplied as fast as the rail carries it. Storage and
+	// stations taking the item have no rate, so they count as buildings and
+	// nothing else.
+	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
 		struct Sum
 		{
 			ItemFlow flow;
 			int32_t  stock = 0;
 			bool     outputKnown = true;
-			float    takeFull = 0.0f, takeAsked = 0.0f;
-			bool     askedKnown = true;
+			float    takeFull = 0.0f;
 			std::unordered_set<uint64_t> from, to;
 		};
 
@@ -647,13 +645,7 @@ namespace Waila::RailNetwork
 					sum.outputKnown = false;
 			}
 			else if (part.crafter && part.full >= 0.0f)
-			{
 				sum.takeFull += part.full;
-				if (!part.requestsKnown)
-					sum.askedKnown = false;
-				else if (part.requesting)
-					sum.takeAsked += part.full;
-			}
 		}
 
 		const bool capped = capacity >= 0.0f;
@@ -680,8 +672,6 @@ namespace Waila::RailNetwork
 				if (capped)
 					flow.max = supply;
 				flow.min = (std::max)(0.0f, supply - sum.takeFull);
-				if (requests && sum.askedKnown)
-					flow.now = (std::max)(0.0f, supply - sum.takeAsked);
 			}
 			flows.push_back(std::move(flow));
 		}
@@ -690,4 +680,132 @@ namespace Waila::RailNetwork
 			[](const ItemFlow& a, const ItemFlow& b) { return a.output > b.output; });
 		return flows;
 	}
+
+	// One From/To line under the totals: the buildings of one name at one end
+	// making or taking one item, from the same parts the totals are summed
+	// from, each building once. Rates are summed over the buildings whose rate
+	// is known; negative when none is.
+	struct EndRow
+	{
+		bool        source = false;
+		std::string name;
+		std::string item;
+		int32_t     count = 0;
+		float       full  = -1.0f;
+		float       now   = -1.0f;
+	};
+
+	// Sources first, each line in the order its first building was seen. Only
+	// items in `items` get a line: a consumer's other ingredients are not on
+	// this rail.
+	inline std::vector<EndRow> GroupEnds(const std::vector<FlowPart>& parts, const std::unordered_set<std::string>& items)
+	{
+		std::vector<EndRow> rows;
+		std::unordered_set<std::string> seen;   // end, item and building
+		for (const FlowPart& part : parts)
+		{
+			if (!items.count(part.item))
+				continue;
+			if (!seen.insert(std::string(part.source ? "from|" : "to|") + part.item + "|" + std::to_string(part.building)).second)
+				continue;
+
+			auto row = std::find_if(rows.begin(), rows.end(), [&](const EndRow& r)
+				{ return r.source == part.source && r.item == part.item && r.name == part.name; });
+			if (row == rows.end())
+			{
+				EndRow added;
+				added.source = part.source;
+				added.name   = part.name;
+				added.item   = part.item;
+				rows.push_back(std::move(added));
+				row = rows.end() - 1;
+			}
+			++row->count;
+			if (part.full >= 0.0f)
+				row->full = (std::max)(row->full, 0.0f) + part.full;
+			if (part.now >= 0.0f)
+				row->now = (std::max)(row->now, 0.0f) + part.now;
+		}
+		std::stable_partition(rows.begin(), rows.end(), [](const EndRow& r) { return r.source; });
+		return rows;
+	}
+
+	// ---- What crosses the rail --------------------------------------------------
+
+	// Counts the items that cross a rail, from samples of the drones on its
+	// lane: a drone on the lane carrying an item that was not on it at the
+	// sample before is one item of that kind. Drones already on the lane at the
+	// first sample came on before the count started, so they are left out.
+	// Times are seconds on any steady clock. Passes older than the window are
+	// dropped, and at most kMaxPasses are kept.
+	class FlowMeter
+	{
+	public:
+		static constexpr double kWindow    = 60.0;   // the rolling window
+		static constexpr double kReady     = 20.0;   // sampled this long before a rate is given
+		static constexpr size_t kMaxPasses = 2048;
+
+		struct OnLane
+		{
+			uint64_t    drone = 0;
+			std::string item;   // the item's unique name
+		};
+
+		void Sample(double t, const std::vector<OnLane>& lane)
+		{
+			const auto old = std::find_if(m_passes.begin(), m_passes.end(),
+				[&](const std::pair<double, std::string>& p) { return p.first >= t - kWindow; });
+			m_passes.erase(m_passes.begin(), old);
+
+			if (!m_started)
+			{
+				m_started = true;
+				m_start   = t;
+			}
+			else
+			{
+				for (const OnLane& d : lane)
+				{
+					if (std::find(m_last.begin(), m_last.end(), d.drone) != m_last.end())
+						continue;
+					if (m_passes.size() >= kMaxPasses)
+						m_passes.erase(m_passes.begin());
+					m_passes.emplace_back(t, d.item);
+				}
+			}
+
+			m_last.clear();
+			for (const OnLane& d : lane)
+				m_last.push_back(d.drone);
+		}
+
+		bool Ready(double t) const { return m_started && t - m_start >= kReady; }
+
+		// Items of this kind a minute over the window so far; negative until Ready.
+		float PerMin(double t, const std::string& item) const
+		{
+			if (!Ready(t))
+				return -1.0f;
+			const double span = (std::min)(t - m_start, kWindow);
+			const auto n = std::count_if(m_passes.begin(), m_passes.end(), [&](const std::pair<double, std::string>& p)
+				{ return p.first >= t - kWindow && p.second == item; });
+			return static_cast<float>(static_cast<double>(n) / span * 60.0);
+		}
+
+		// The kinds of item that crossed in the window, in the order first seen.
+		std::vector<std::string> Items(double t) const
+		{
+			std::vector<std::string> items;
+			for (const auto& p : m_passes)
+				if (p.first >= t - kWindow && std::find(items.begin(), items.end(), p.second) == items.end())
+					items.push_back(p.second);
+			return items;
+		}
+
+	private:
+		bool                                        m_started = false;
+		double                                      m_start   = 0.0;
+		std::vector<uint64_t>                       m_last;
+		std::vector<std::pair<double, std::string>> m_passes;
+	};
 }

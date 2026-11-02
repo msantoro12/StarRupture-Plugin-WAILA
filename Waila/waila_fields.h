@@ -385,8 +385,4 @@ namespace Waila::Features
 
 	// The rail's max, from the lane's own speed and spacing.
 	inline bool ShowRailCapacity()     { return RailMass::CapacityAvailable(); }
-
-	// What the machines on a rail ask for, which sets its now; read against
-	// their recipes, so the crafter keys are needed too.
-	inline bool ShowRailRequests()     { return RailMass::RequestsAvailable() && Crafters.On(); }
 }
