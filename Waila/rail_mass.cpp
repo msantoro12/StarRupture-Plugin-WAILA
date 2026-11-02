@@ -191,14 +191,14 @@ namespace Waila::RailMass
 		Member mSocketPair     = RAIL_MEMBER(FCrLogisticsSocketRuntimeData, SocketPairInvisibleConnector, &kPersistentSize, 0);
 
 		// The stock read, a feature of its own: a storage entity's inventory
-		// fragment holds what it stores in the main container, the one the
-		// storage's own card lists. Its miss turns off the stock lines and
-		// nothing else.
+		// fragment holds what it stores in one of its two containers. Its miss
+		// turns off the stock lines and nothing else.
+		Member mInputInventory = RAIL_MEMBER(FCrInventoryFragment, InputInventoryContainer, &kContainerSize, 0);
 		Member mMainInventory  = RAIL_MEMBER(FCrInventoryFragment, MainInventoryContainer, &kContainerSize, 0);
 
 		Member* const kTrackMembers[] = { &mSocketPair };
 
-		Member* const kStockMembers[] = { &mMainInventory };
+		Member* const kStockMembers[] = { &mInputInventory, &mMainInventory };
 
 		// The fragments' reflection objects, found by name on first use.
 		const UScriptStruct* g_lineStruct      = nullptr;
@@ -334,19 +334,15 @@ namespace Waila::RailMass
 			return item && UKismetSystemLibrary::IsValid(item) ? item : nullptr;
 		}
 
-		// The socket pair a socket is on, as a key: its invisible connector's id,
-		// which the game sets on both sockets of a pair at load (from the
-		// socket's SocketPairIndex). 0 when the socket has no pair: the id's
-		// first field is then INDEX_NONE.
+		// The socket pair a socket is on, as a key: its invisible connector's
+		// persistent ID, which the game sets on both sockets of a pair at load
+		// (from the socket's SocketPairIndex). 0 when the socket has no pair: the
+		// ID is then INDEX_NONE. The handle cached after the ID can differ per
+		// copy, so it is left out.
 		uint64_t TrackOf(const uint8_t* socket)
 		{
-			const uint8_t* id = socket + mSocketPair.Offset();
-			if (ReadAt<int32_t>(id, 0) == -1)
-				return 0;
-			uint64_t key = 14695981039346656037ull;   // FNV-1a over the id
-			for (uint32_t i = 0; i < kPersistentSize.size; ++i)
-				key = (key ^ id[i]) * 1099511628211ull;
-			return key ? key : 1;
+			const int32_t id = ReadAt<int32_t>(socket + mSocketPair.Offset(), 0);
+			return id == -1 ? 0 : static_cast<uint64_t>(static_cast<uint32_t>(id)) + 1;
 		}
 
 		// LogisticsType values (ECrMassLogisticsType) the walk tells apart.
@@ -516,9 +512,12 @@ namespace Waila::RailMass
 				out = static_cast<UCrBuildingData*>(placement);
 		}
 
-		// What a storage holds: its inventory fragment's main container, the
-		// one UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal
-		// hands a storage's card.
+		// What a storage holds: both containers of its inventory fragment, one
+		// row per item. UCrBuildingItemStorageComponent::
+		// GetStoredItemsContainerInternal hands the storage's card one of them,
+		// picked by the component's InventoryType, a per-building setting the
+		// Mass data does not carry; the two together are what it holds,
+		// whichever it is.
 		void ReadStoredImpl(Entity storage, std::vector<StoredItemEntry>& out, bool& found)
 		{
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
@@ -527,7 +526,18 @@ namespace Waila::RailMass
 				return;
 			found = true;
 			int32_t usedSlots = 0;
-			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mMainInventory.Offset()), out, usedSlots);
+			std::vector<StoredItemEntry> main;
+			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mInputInventory.Offset()), out, usedSlots);
+			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mMainInventory.Offset()), main, usedSlots);
+			for (StoredItemEntry& entry : main)
+			{
+				const auto same = std::find_if(out.begin(), out.end(),
+					[&](const StoredItemEntry& held) { return held.uniqueName == entry.uniqueName; });
+				if (same != out.end())
+					same->count += entry.count;
+				else
+					out.push_back(std::move(entry));
+			}
 		}
 
 		// A bad pointer in the game's data must not take the game down.

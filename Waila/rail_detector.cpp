@@ -426,7 +426,7 @@ namespace Waila
 						continue;
 					for (const StoredItemEntry& entry : held)
 					{
-						if (!filterUnique.empty() && entry.uniqueName != filterUnique)
+						if (entry.uniqueName.empty() || (!filterUnique.empty() && entry.uniqueName != filterUnique))
 							continue;
 						if (!upstream && !made.count(entry.uniqueName) && !out.stock.count(entry.uniqueName))
 							continue;
