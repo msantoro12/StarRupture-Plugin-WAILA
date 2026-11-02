@@ -136,7 +136,7 @@ extern "C" {
 				{
 					LOG_DEBUG("PluginInit: registering OnAnyWorldBeginPlay");
 					self->hooks->World->RegisterOnAnyWorldBeginPlay(&OnWorldBeginPlay);
-					LOG_DEBUG("PluginInit: registering OnAfterWorldEndPlay");
+					LOG_DEBUG("PluginInit: registering OnBeforeWorldEndPlay");
 					self->hooks->World->RegisterOnBeforeWorldEndPlay(&OnWorldEndPlay);
 					LOG_DEBUG("PluginInit: world callbacks registered");
 
@@ -186,7 +186,7 @@ extern "C" {
 		if (g_self && g_self->hooks && g_self->hooks->World)
 		{
 			g_self->hooks->World->UnregisterOnAnyWorldBeginPlay(&OnWorldBeginPlay);
-			g_self->hooks->World->UnregisterOnAfterWorldEndPlay(&OnWorldEndPlay);
+			g_self->hooks->World->UnregisterOnBeforeWorldEndPlay(&OnWorldEndPlay);
 			LOG_DEBUG("PluginShutdown: world callbacks unregistered");
 		}
 

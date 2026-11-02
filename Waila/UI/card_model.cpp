@@ -141,6 +141,8 @@ namespace Waila::UI
 
 		out.hasFlow = true;
 
+		const bool starved = info.bMissingItems && !info.bOutputFull;
+
 		for (const auto& in : info.recipeInputs)
 		{
 			FlowSlot slot;
@@ -157,6 +159,22 @@ namespace Waila::UI
 			{
 				slot.dim  = in.have < in.need;
 				slot.tone = slot.dim ? Health::Bad : Health::Idle;
+			}
+
+			// What the machine takes in a minute, above the tile: now, then at
+			// full speed. A stalled machine takes nothing, the same as the output
+			// figure. Only the stock is readable, not what is arriving, so an
+			// ingredient the machine lacks is short by its whole per-minute need.
+			if (in.perMin >= 0.0f)
+			{
+				char now[24];
+				char full[24];
+				Draw::FormatNumber(now, sizeof(now), out.status == Health::Bad ? 0.0f : in.perMin);
+				Draw::FormatNumber(full, sizeof(full), in.perMin);
+				slot.rate = std::string(now) + " / " + full;
+
+				if (starved && slot.dim)
+					slot.shortage = std::string("short ") + full;
 			}
 
 			out.inputs.push_back(std::move(slot));
@@ -189,10 +207,12 @@ namespace Waila::UI
 			out.rateValue = num;
 			out.rateUnit  = "/min";
 
-			char cycle[32];
+			char cycle[56];
+			char full[24];
 			char secs[24];
+			Draw::FormatNumber(full, sizeof(full), perMinute);
 			Draw::FormatSeconds(secs, sizeof(secs), info.recipeBuildTime);
-			snprintf(cycle, sizeof(cycle), "%s cycle", secs);
+			snprintf(cycle, sizeof(cycle), "of %s/min, %s cycle", full, secs);
 			out.rateSub = cycle;
 
 			if (out.status != Health::Bad)
@@ -211,25 +231,7 @@ namespace Waila::UI
 		}
 
 		out.outputName = recipeName;
-
-		// What the machine takes in a minute, one row per ingredient. A stalled
-		// machine takes nothing, the same as the output figure above.
-		for (const auto& in : info.recipeInputs)
-		{
-			if (in.perMin < 0.0f)
-				continue;
-
-			char num[24];
-			Draw::FormatNumber(num, sizeof(num), out.status == Health::Bad ? 0.0f : in.perMin);
-
-			RateRow row;
-			row.icon = in.itemData ? Icons::ForItem(in.itemData) : Icons::ForItemClass(in.itemClass);
-			row.name = in.displayName;
-			row.now  = std::string(num) + "/min";
-			if (out.status == Health::Bad)
-				row.tone = Health::Bad;
-			out.inputRates.push_back(std::move(row));
-		}
+		out.footLeft   = "Per min: now / full speed";
 	}
 
 	// -------------------------------------------------------------------------
@@ -330,7 +332,7 @@ namespace Waila::UI
 	namespace
 	{
 		// Where the rail's items come from, then where they go, under the item
-		// rates, in the rows left. A crafter shows what it makes now; storage and
+		// rates, in the rows left. A crafter shows what it makes or takes now; storage and
 		// stations have no rate, and min and max are the rail's, so those stay blank.
 		// Returns the rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
@@ -392,7 +394,7 @@ namespace Waila::UI
 		char buf[48];
 		if (!info.peers.empty())
 		{
-			snprintf(buf, sizeof(buf), "%d from, %d to", info.fromCount, info.destCount);
+			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.peersTruncated ? "+" : "");
 			out.statusText = buf;
 		}
 		else if (info.sourceCount > 0)

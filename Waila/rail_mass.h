@@ -14,10 +14,11 @@ namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; cl
 // building the item comes from and the one it goes to.
 //
 // Every member of every Mass fragment and every struct stride comes from the
-// loader by name (ResolveField). Keys are declared as three features: "rail
-// sources" (Waila::Features::RailSources), "rail capacity" and "rail requests".
-// The last two list the same core keys, so a name the game no longer has turns
-// off only the figure it feeds: the sources, the max, or the now.
+// loader by name (ResolveField). Keys are declared as four features: "rail
+// sources" (Waila::Features::RailSources), "rail capacity", "rail requests" and
+// "rail buildings". The last three list the same core keys, so a name the game
+// no longer has turns off only what it feeds: the sources, the max, the now, or
+// the names of the buildings at the rail's ends.
 namespace Waila::RailMass
 {
 	// A Mass entity, as the engine's FMassEntityHandle packs it: Index in the
@@ -50,6 +51,7 @@ namespace Waila::RailMass
 		Entity                 entity = 0;
 		bool                   source = false;   // false: the item goes there
 		SDK::UAuItemDataBase*  item   = nullptr; // valid only in the tick it was read
+		bool                   carried = false;  // the drone has the item; false: still on its way to pick it up
 	};
 
 	struct Observation
@@ -76,8 +78,10 @@ namespace Waila::RailMass
 
 	// The building a Mass entity is, from its building parameters (the entity
 	// keeps them whether or not its actor is loaded). The pointer is valid only
-	// in the tick it was read. False when the entity is gone, has no building
-	// parameters, or they name no building data; `out` is then null.
+	// in the tick it was read. False, with `out` null, when: the reader or the
+	// building names are off (a key missing on this build, or an earlier read
+	// faulted); the building parameters' struct is not found; the entity is gone
+	// or not built; it has no building parameters; or they hold no building data.
 	bool ReadBuilding(Entity building, SDK::UCrBuildingData*& out);
 
 	// The most items a minute the rail's lane lets through, from the lane's own

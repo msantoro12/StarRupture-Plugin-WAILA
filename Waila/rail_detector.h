@@ -51,6 +51,7 @@ namespace Waila
 		bool                       fromMass = false;
 		int32_t                    fromCount = 0;
 		int32_t                    destCount = 0;
+		bool                       peersTruncated = false;   // more buildings than were kept
 		std::vector<RailPeerEntry> peers;     // sources first
 		std::string                note;      // stands in when there is nothing to list
 

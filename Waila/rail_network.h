@@ -3,6 +3,7 @@
 // The drone rail topology, in plain C++ with no game types, so the same code
 // runs in the plugin and in Tests\RailNetworkTests.
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -567,4 +568,126 @@ namespace Waila::RailNetwork
 		Detail::PointGrid                                     m_looseEnds;
 		std::vector<bool>                                     m_laneTrack;
 	};
+
+	// ---- One row per item -----------------------------------------------------
+
+	// One building's part in an item's flow along a rail, from either way the
+	// plugin finds it: the rail layout (loaded buildings) or the drones seen on
+	// the rail. `building` names the building the same way in both (its Mass
+	// entity), so a building seen both ways counts once.
+	struct FlowPart
+	{
+		uint64_t    building  = 0;
+		std::string item;               // the item's unique name
+		bool        source    = false;  // false: it takes the item off the line
+		bool        crafter   = true;   // false: storage or a station, which has no rate of its own
+		float       full      = -1.0f;  // a crafter's items a minute running full out; negative when unread
+		bool        requestsKnown = false;   // a taking crafter: its requests could be read
+		bool        requesting    = false;   // ...and it is asking the drones for the item now
+	};
+
+	// The three potentials of one item, items a minute; negative when unknown.
+	struct ItemFlow
+	{
+		std::string item;
+		int32_t     sources   = 0;      // distinct buildings it comes from
+		int32_t     consumers = 0;      // distinct buildings taking it
+		float       output    = 0.0f;   // the crafters' output, uncapped; orders the rows
+		float       max       = -1.0f;  // the sources' output, capped by the rail
+		float       min       = -1.0f;  // left with every taking crafter running full out
+		float       now       = -1.0f;  // left given the ones asking for it now
+	};
+
+	// Sums the parts into one flow per item that has a source, biggest output
+	// first. capacity is what the rail carries in items a minute (negative when
+	// unread, which leaves max unknown); requests says whether the requests are
+	// read at all.
+	//
+	// Supply is the source crafters' output, capped by the capacity. A source
+	// crafter whose rate is unread makes the whole item unknown. An item that
+	// only comes out of storage or stations is supplied as fast as the rail
+	// carries it. Storage and stations taking the item have no rate, so they
+	// count as buildings and nothing else.
+	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity, bool requests)
+	{
+		struct Sum
+		{
+			ItemFlow flow;
+			int32_t  stock = 0;
+			bool     outputKnown = true;
+			float    takeFull = 0.0f, takeAsked = 0.0f;
+			bool     askedKnown = true;
+			std::unordered_set<uint64_t> from, to;
+		};
+
+		std::vector<Sum> sums;
+		std::unordered_map<std::string, size_t> index;
+		for (const FlowPart& part : parts)
+		{
+			auto found = index.find(part.item);
+			if (found == index.end())
+			{
+				found = index.emplace(part.item, sums.size()).first;
+				sums.emplace_back();
+				sums.back().flow.item = part.item;
+			}
+			Sum& sum = sums[found->second];
+
+			// The same building seen twice, either way, counts once.
+			if (!(part.source ? sum.from : sum.to).insert(part.building).second)
+				continue;
+
+			if (part.source)
+			{
+				if (!part.crafter)
+					++sum.stock;
+				else if (part.full >= 0.0f)
+					sum.flow.output += part.full;
+				else
+					sum.outputKnown = false;
+			}
+			else if (part.crafter && part.full >= 0.0f)
+			{
+				sum.takeFull += part.full;
+				if (!part.requestsKnown)
+					sum.askedKnown = false;
+				else if (part.requesting)
+					sum.takeAsked += part.full;
+			}
+		}
+
+		const bool capped = capacity >= 0.0f;
+		std::vector<ItemFlow> flows;
+		for (Sum& sum : sums)
+		{
+			// An item nothing on the rail supplies is not on it.
+			if (sum.from.empty())
+				continue;
+
+			ItemFlow& flow = sum.flow;
+			flow.sources   = static_cast<int32_t>(sum.from.size());
+			flow.consumers = static_cast<int32_t>(sum.to.size());
+
+			const bool crafted = static_cast<int32_t>(sum.from.size()) > sum.stock;
+			float supply = -1.0f;
+			if (crafted && sum.outputKnown)
+				supply = capped ? (std::min)(flow.output, capacity) : flow.output;
+			else if (!crafted && capped)
+				supply = capacity;
+
+			if (supply >= 0.0f)
+			{
+				if (capped)
+					flow.max = supply;
+				flow.min = (std::max)(0.0f, supply - sum.takeFull);
+				if (requests && sum.askedKnown)
+					flow.now = (std::max)(0.0f, supply - sum.takeAsked);
+			}
+			flows.push_back(std::move(flow));
+		}
+
+		std::stable_sort(flows.begin(), flows.end(),
+			[](const ItemFlow& a, const ItemFlow& b) { return a.output > b.output; });
+		return flows;
+	}
 }

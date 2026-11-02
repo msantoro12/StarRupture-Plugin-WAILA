@@ -164,12 +164,14 @@ namespace Waila::RailMass
 		Member mMissingItems   = RAIL_MEMBER(FCrCraftingFragment, bIsMissingItems, nullptr, kBool);
 		Member mOutputFull     = RAIL_MEMBER(FCrCraftingFragment, bOutputFull, nullptr, kBool);
 
-		// A building entity's own building parameters, a const shared fragment: the
-		// placement data names the building, loaded or not.
+		// The building name read, a feature of its own: a building entity's building
+		// parameters (a const shared fragment) hold the placement data, which names
+		// the building whether or not its actor is loaded. Its miss turns off the
+		// names and nothing else: the rows then read "Unknown building".
 		Member mPlacement      = RAIL_MEMBER(FCrBuildingParameters, PlacementData, nullptr, kPtr);
 
 		Member* const kMembers[] = {
-			&mPlacement, &mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
+			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
 			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
 			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
 			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
@@ -182,6 +184,8 @@ namespace Waila::RailMass
 		Member mLineSlotLength = RAIL_MEMBER(FCrLogisticsLineParameters, SlotLength, nullptr, kFloat);
 		Member mIsStartLine    = RAIL_MEMBER(FCrLogisticsLineFragment, bIsStartLine, nullptr, kBool);
 		Member mHalfSlotLength = RAIL_MEMBER(UDronesDeveloperSettings, HalfRailSlotLengthDefault, nullptr, kFloat);
+
+		Member* const kBuildingMembers[] = { &mPlacement };
 
 		Member* const kCapacityMembers[] = { &mLineMoveSpeed, &mLineSlotLength, &mIsStartLine, &mHalfSlotLength };
 
@@ -208,9 +212,11 @@ namespace Waila::RailMass
 		PluginMap::Feature g_feature{ "rail-sources", "Where a drone rail's items come from and go to", {}, {} };
 		PluginMap::Feature g_capacityFeature{ "rail-capacity", "How many items a minute a drone rail carries", {}, {} };
 		PluginMap::Feature g_requestFeature{ "rail-requests", "What a machine is asking drones to bring", {}, {} };
+		PluginMap::Feature g_buildingFeature{ "rail-buildings", "Which building a rail's far ends are", {}, {} };
 		bool g_resolved         = false;
 		bool g_capacityResolved = false;
 		bool g_requestsResolved = false;
+		bool g_buildingResolved = false;
 		bool g_faulted          = false;
 		bool g_capacityFaulted  = false;
 		bool g_requestsFaulted  = false;
@@ -377,6 +383,7 @@ namespace Waila::RailMass
 				// What the drone carries, or when it is still on its way to pick
 				// up, what the request wants.
 				UAuItemDataBase* item = ItemOf(agent + mCarriedItem.Offset());
+				const bool carried = item != nullptr;
 				if (!item)
 					item = ItemOf(data + mWantedItem.Offset());
 
@@ -391,9 +398,9 @@ namespace Waila::RailMass
 					const Entity source = HandleOf(entry + mItemSource.Offset(), world);
 					const Entity dest   = HandleOf(entry + mItemDest.Offset(), world);
 					if (source && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ source, true, item });
+						out.peers.push_back(Peer{ source, true, item, carried });
 					if (dest && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ dest, false, item });
+						out.peers.push_back(Peer{ dest, false, item, carried });
 				}
 			}
 		}
@@ -572,7 +579,6 @@ namespace Waila::RailMass
 		core.push_back(kKeyIsValid);
 		core.push_back(kKeyIsBuilt);
 		core.push_back(kKeyGetHandle);
-		core.push_back(kKeyGetShared);
 
 		g_feature.keys = core;
 		g_feature.keys.insert(g_feature.keys.end(), alsoNeeds.begin(), alsoNeeds.end());
@@ -581,11 +587,18 @@ namespace Waila::RailMass
 		for (const Member* member : kCapacityMembers)
 			g_capacityFeature.keys.push_back(member->spec.key);
 
+		g_capacityFeature.keys.push_back(kKeyGetShared);
+
+		g_buildingFeature.keys = core;
+		for (const Member* member : kBuildingMembers)
+			g_buildingFeature.keys.push_back(member->spec.key);
+		g_buildingFeature.keys.push_back(kKeyGetShared);
+
 		g_requestFeature.keys = core;
 		for (const Member* member : kRequestMembers)
 			g_requestFeature.keys.push_back(member->spec.key);
 
-		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_requestFeature);
+		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_requestFeature, g_buildingFeature);
 	}
 
 	void Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -618,6 +631,9 @@ namespace Waila::RailMass
 		bool capacity = true;
 		for (Member* member : kCapacityMembers)
 			capacity = resolveMember(*member) && capacity;
+		bool building = true;
+		for (Member* member : kBuildingMembers)
+			building = resolveMember(*member) && building;
 		bool requests = true;
 		for (Member* member : kRequestMembers)
 			requests = resolveMember(*member) && requests;
@@ -635,8 +651,9 @@ namespace Waila::RailMass
 		g_getHandle    = reinterpret_cast<GetHandleFn>(getHandle);
 		g_getShared    = reinterpret_cast<GetSharedFn>(getShared);
 
-		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle && getShared;
-		g_capacityResolved = capacity;
+		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle;
+		g_capacityResolved = capacity && getShared;
+		g_buildingResolved = building && getShared;
 		g_requestsResolved = requests;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
@@ -644,18 +661,25 @@ namespace Waila::RailMass
 			LOG_WARN("RailMass: the rail capacity is off on this build; a rail shows no max, the rest of its card is unaffected");
 		if (g_resolved && g_feature.On() && (!g_requestsResolved || !g_requestFeature.On()))
 			LOG_WARN("RailMass: machine requests are off on this build; a rail shows no now figure, the rest of its card is unaffected");
+		if (g_resolved && g_feature.On() && (!g_buildingResolved || !g_buildingFeature.On()))
+			LOG_WARN("RailMass: building names are off on this build; a rail's ends read Unknown building, the rest of its card is unaffected");
 	}
 
 	bool Available()
 	{
 		return g_resolved && g_feature.On() && !g_faulted
-			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && g_getShared
+			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle
 			&& Fields::HelperEntity.offset >= 0;
 	}
 
 	bool CapacityAvailable()
 	{
-		return Available() && !g_capacityFaulted && g_capacityResolved && g_capacityFeature.On();
+		return Available() && !g_capacityFaulted && g_capacityResolved && g_capacityFeature.On() && g_getShared;
+	}
+
+	bool BuildingAvailable()
+	{
+		return Available() && !g_buildingFaulted && g_buildingResolved && g_buildingFeature.On() && g_getShared;
 	}
 
 	bool RequestsAvailable()
@@ -691,7 +715,7 @@ namespace Waila::RailMass
 	bool ReadBuilding(Entity building, UCrBuildingData*& out)
 	{
 		out = nullptr;
-		if (!Available() || g_buildingFaulted)
+		if (!BuildingAvailable())
 			return false;
 		return Guarded([&] { ReadBuildingImpl(building, out); }, g_buildingFaulted) && out != nullptr;
 	}
