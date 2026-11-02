@@ -141,6 +141,8 @@ namespace Waila::UI
 
 		out.hasFlow = true;
 
+		const bool starved = info.bMissingItems && !info.bOutputFull;
+
 		for (const auto& in : info.recipeInputs)
 		{
 			FlowSlot slot;
@@ -159,13 +161,20 @@ namespace Waila::UI
 				slot.tone = slot.dim ? Health::Bad : Health::Idle;
 			}
 
-			// What the machine takes in a minute, above the tile. A stalled
-			// machine takes nothing, the same as the output figure.
+			// What the machine takes in a minute, above the tile: now, then at
+			// full speed. A stalled machine takes nothing, the same as the output
+			// figure. Only the stock is readable, not what is arriving, so an
+			// ingredient the machine lacks is short by its whole per-minute need.
 			if (in.perMin >= 0.0f)
 			{
-				char num[24];
-				Draw::FormatNumber(num, sizeof(num), out.status == Health::Bad ? 0.0f : in.perMin);
-				slot.rate = std::string(num) + "/min";
+				char now[24];
+				char full[24];
+				Draw::FormatNumber(now, sizeof(now), out.status == Health::Bad ? 0.0f : in.perMin);
+				Draw::FormatNumber(full, sizeof(full), in.perMin);
+				slot.rate = std::string(now) + " / " + full;
+
+				if (starved && slot.dim)
+					slot.shortage = std::string("short ") + full;
 			}
 
 			out.inputs.push_back(std::move(slot));
@@ -198,10 +207,12 @@ namespace Waila::UI
 			out.rateValue = num;
 			out.rateUnit  = "/min";
 
-			char cycle[32];
+			char cycle[56];
+			char full[24];
 			char secs[24];
+			Draw::FormatNumber(full, sizeof(full), perMinute);
 			Draw::FormatSeconds(secs, sizeof(secs), info.recipeBuildTime);
-			snprintf(cycle, sizeof(cycle), "%s cycle", secs);
+			snprintf(cycle, sizeof(cycle), "of %s/min, %s cycle", full, secs);
 			out.rateSub = cycle;
 
 			if (out.status != Health::Bad)
@@ -220,6 +231,7 @@ namespace Waila::UI
 		}
 
 		out.outputName = recipeName;
+		out.footLeft   = "Per min: now / full speed";
 	}
 
 	// -------------------------------------------------------------------------

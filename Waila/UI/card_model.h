@@ -29,7 +29,8 @@ namespace Waila::UI
 		std::string         label;
 		Health              tone = Health::Idle;
 		bool                dim  = false;   // input the machine hasn't got
-		std::string         rate;           // "N/min", drawn above the tile; empty for none
+		std::string         rate;           // "now / full" per minute, drawn above the tile; empty for none
+		std::string         shortage;       // "short N" per minute, in a second line; empty when nothing is missing
 	};
 
 	// A figure with a short caption, used by buildings that have no recipe to draw.

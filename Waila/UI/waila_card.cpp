@@ -81,7 +81,8 @@ namespace Waila::UI
 
 		constexpr size_t kInCols = 2;
 
-		// The line above each input tile that carries its items per minute.
+		// Each line above an input tile: items per minute now and at full speed,
+		// then, for a starved machine, what the tile is short by.
 		constexpr float kInRateH = 14.0f;
 
 		// Measure() runs on the game thread, where there is no ImGui context and so
@@ -97,12 +98,32 @@ namespace Waila::UI
 			return static_cast<float>(s.size()) * font * perChar;
 		}
 
-		bool HasInputRates(const CardModel& m)
+		// Lines of text above the input tiles: none, the rate, or the rate and
+		// the shortage.
+		int InputRateLines(const CardModel& m)
 		{
+			int lines = 0;
 			for (const auto& in : m.inputs)
+			{
+				if (!in.shortage.empty())
+					return 2;
 				if (!in.rate.empty())
-					return true;
-			return false;
+					lines = 1;
+			}
+			return lines;
+		}
+
+		// A tile's cell is as wide as the wider of the tile and its figures, so
+		// neighbouring figures can't run into each other.
+		float InputCellWidth(const CardModel& m, float tile)
+		{
+			float w = tile;
+			for (const auto& in : m.inputs)
+			{
+				w = (std::max)(w, EstimateW(in.rate, kFontTiny));
+				w = (std::max)(w, EstimateW(in.shortage, kFontTiny));
+			}
+			return w;
 		}
 
 		size_t InputRows(const CardModel& m)
@@ -116,7 +137,10 @@ namespace Waila::UI
 		struct FlowMetrics
 		{
 			float tile;     // input tile edge
-			float gridW;    // width the tiles actually occupy, <= kInGridW
+			float cellW;    // width of one input cell: the tile, or its figures if wider
+			float rateH;    // height of the figures above each tile
+			float gridW;    // width the cells actually occupy
+			float slotW;    // width the grid reserves: gridW, but never under kInGridW
 			float stackH;   // total height of the input grid
 			float rowH;     // height of the flow row, ring floor included
 			float bodyH;    // rowH plus breathing room
@@ -135,11 +159,14 @@ namespace Waila::UI
 			// height shared between the rows.
 			const float byWidth  = (kInGridW - (static_cast<float>(kInCols) - 1.0f) * kRowGap)
 			                     / static_cast<float>(kInCols);
-			const float rateH    = HasInputRates(m) ? kInRateH : 0.0f;
+			const float rateH    = static_cast<float>(InputRateLines(m)) * kInRateH;
 			const float byHeight = (kRingD - (rows - 1.0f) * kRowGap) / rows - rateH;
 
 			f.tile   = Clamp((std::min)(byWidth, byHeight), kTileInMin, kTileInMax);
-			f.gridW  = cols * f.tile + (cols - 1.0f) * kRowGap;
+			f.rateH  = rateH;
+			f.cellW  = InputCellWidth(m, f.tile);
+			f.gridW  = cols * f.cellW + (cols - 1.0f) * kRowGap;
+			f.slotW  = (std::max)(kInGridW, f.gridW);
 			f.stackH = rows * (f.tile + rateH) + (rows - 1.0f) * kRowGap;
 			f.rowH   = (std::max)(kRingD, f.stackH) + 14.0f;
 			f.bodyH  = f.rowH;
@@ -155,11 +182,11 @@ namespace Waila::UI
 			return f;
 		}
 
-		// Every term but the tail is a constant, so the equation lands on the same
-		// pixel on every machine and only the card's right edge moves.
+		// Every term but the input grid and the tail is a constant, so the equation
+		// lands on the same pixel on most machines and only the card's right edge moves.
 		float FlowGroupWidth(const CardModel& m, const FlowMetrics& f)
 		{
-			float w = kInGridW
+			float w = f.slotW
 			        + kGap + kArrowW + kGap
 			        + kRingD
 			        + kGap + kArrowW + kGap
@@ -446,24 +473,31 @@ namespace Waila::UI
 			// ── Inputs, two to a row ─────────────────────────────────────────
 			const float rounding  = (std::max)(6.0f, f.tile * 0.18f);
 			const float badgeFont = Draw::CountBadgeFont(f.tile * s);
-			const float gridX     = x + (kInGridW - f.gridW) * 0.5f * s;
-			const float rateH     = HasInputRates(m) ? kInRateH : 0.0f;
+			const float gridX     = x + (f.slotW - f.gridW) * 0.5f * s;
+			const float rateH     = f.rateH;
 			const float gridY     = cy - f.stackH * s * 0.5f;
 
 			for (size_t i = 0; i < m.inputs.size(); ++i)
 			{
 				const FlowSlot& in = m.inputs[i];
 
-				const float tx = gridX + (f.tile + kRowGap) * s * static_cast<float>(i % kInCols);
+				const float cellX = gridX + (f.cellW + kRowGap) * s * static_cast<float>(i % kInCols);
+				const float tx = cellX + (f.cellW - f.tile) * 0.5f * s;
 				const float ty = gridY + (rateH + f.tile + kRowGap) * s * static_cast<float>(i / kInCols) + rateH * s;
 
 				const Rect tile = { tx, ty, tx + f.tile * s, ty + f.tile * s };
 				Draw::IconTile(ui, dl, tile, in.icon, pal, rounding * s, in.dim ? 0.45f : 1.0f, true);
 
+				const float midX = cellX + f.cellW * 0.5f * s;
+
 				if (!in.rate.empty())
-					Draw::TextCentered(ui, dl, (tile.x0 + tile.x1) * 0.5f, tile.y0 - rateH * s,
+					Draw::TextCentered(ui, dl, midX, tile.y0 - rateH * s,
 						in.rate.c_str(), in.tone == Health::Idle ? pal.textMuted : Theme::Of(pal, in.tone),
 						kFontTiny * s);
+
+				if (!in.shortage.empty())
+					Draw::TextCentered(ui, dl, midX, tile.y0 - kInRateH * s,
+						in.shortage.c_str(), pal.bad, kFontTiny * s);
 
 				// A starved input gets a red keyline as well as the dimming, so it
 				// still reads when the icon itself is dark.
@@ -478,7 +512,7 @@ namespace Waila::UI
 				}
 			}
 
-			x += (kInGridW + kGap) * s;
+			x += (f.slotW + kGap) * s;
 
 			Draw::Arrow(ui, dl, x + kArrowW * s * 0.5f, cy, kArrowW * s * 0.8f,
 				pal.textFaint, 1.6f * s);
