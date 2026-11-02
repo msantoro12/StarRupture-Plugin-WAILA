@@ -337,6 +337,7 @@ namespace Waila
 			std::string      itemDisplay;
 			std::string      buildingName;   // empty until its building data could be read
 			float            perMinNow = -1.0f;
+			bool             carried   = false;   // seen on a drone carrying the item, not one on its way to pick it up
 		};
 
 		struct MassCache
@@ -371,8 +372,14 @@ namespace Waila
 		// building (storage, stations) or when the recipe has neither. Also adds
 		// the building's part to the item's sums, at its full rate: storage, a
 		// station or a crafter handing out what it does not make is stock.
+		//
+		// A source is only added once a drone has been seen carrying the item from
+		// it: an empty drone on its way to a pickup may be on a stretch before the
+		// pickup, which the item never passes.
 		void RateOf(MassPeer& peer, std::vector<RailNetwork::FlowPart>& parts)
 		{
+			std::vector<RailNetwork::FlowPart> none;
+			std::vector<RailNetwork::FlowPart>& sums = !peer.source || peer.carried ? parts : none;
 			peer.perMinNow = -1.0f;
 			RailMass::CrafterState crafter;
 			const bool isCrafter = RailMass::ReadCrafter(peer.entity, crafter) && crafter.isCrafter;
@@ -387,7 +394,7 @@ namespace Waila
 				{
 					if (!RecipeRate(recipe, 0, crafter.speed, full))
 						full = -1.0f;
-					parts.push_back({ peer.entity, peer.itemUnique, true, true, full });
+					sums.push_back({ peer.entity, peer.itemUnique, true, true, full });
 				}
 				else
 				{
@@ -397,16 +404,16 @@ namespace Waila
 					if (!inputs.empty())
 						full = inputs.front().perMin;
 					if (!peer.source)
-						AddTaker(peer.entity, peer.entity, inputs, parts);
+						AddTaker(peer.entity, peer.entity, inputs, sums);
 				}
 			}
 			if (full >= 0.0f)
 				peer.perMinNow = crafter.stalled ? 0.0f : full;
 
-			const bool counted = std::any_of(parts.begin(), parts.end(), [&](const RailNetwork::FlowPart& p)
+			const bool counted = std::any_of(sums.begin(), sums.end(), [&](const RailNetwork::FlowPart& p)
 				{ return p.building == peer.entity && p.source == peer.source && p.item == peer.itemUnique; });
 			if (!counted)
-				parts.push_back({ peer.entity, peer.itemUnique, peer.source, isCrafter && !rates });
+				sums.push_back({ peer.entity, peer.itemUnique, peer.source, isCrafter && !rates });
 		}
 
 		void Merge(MassCache& cache, const RailMass::Observation& seen)
@@ -417,7 +424,10 @@ namespace Waila
 				const auto same = std::find_if(cache.peers.begin(), cache.peers.end(), [&](const MassPeer& m)
 					{ return m.entity == p.entity && m.source == p.source && m.itemUnique == unique; });
 				if (same != cache.peers.end())
+				{
+					same->carried = same->carried || p.carried;
 					continue;
+				}
 				if (cache.peers.size() >= kMaxPeers)
 				{
 					cache.truncated = true;
@@ -425,8 +435,9 @@ namespace Waila
 				}
 
 				MassPeer peer;
-				peer.entity = p.entity;
-				peer.source = p.source;
+				peer.entity  = p.entity;
+				peer.source  = p.source;
+				peer.carried = p.carried;
 				if (p.item)
 				{
 					peer.item.ObjectIndex        = p.item->Index;

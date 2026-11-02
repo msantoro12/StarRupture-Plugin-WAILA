@@ -383,6 +383,7 @@ namespace Waila::RailMass
 				// What the drone carries, or when it is still on its way to pick
 				// up, what the request wants.
 				UAuItemDataBase* item = ItemOf(agent + mCarriedItem.Offset());
+				const bool carried = item != nullptr;
 				if (!item)
 					item = ItemOf(data + mWantedItem.Offset());
 
@@ -397,9 +398,9 @@ namespace Waila::RailMass
 					const Entity source = HandleOf(entry + mItemSource.Offset(), world);
 					const Entity dest   = HandleOf(entry + mItemDest.Offset(), world);
 					if (source && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ source, true, item });
+						out.peers.push_back(Peer{ source, true, item, carried });
 					if (dest && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ dest, false, item });
+						out.peers.push_back(Peer{ dest, false, item, carried });
 				}
 			}
 		}

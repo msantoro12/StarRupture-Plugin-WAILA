@@ -51,6 +51,7 @@ namespace Waila::RailMass
 		Entity                 entity = 0;
 		bool                   source = false;   // false: the item goes there
 		SDK::UAuItemDataBase*  item   = nullptr; // valid only in the tick it was read
+		bool                   carried = false;  // the drone has the item; false: still on its way to pick it up
 	};
 
 	struct Observation
