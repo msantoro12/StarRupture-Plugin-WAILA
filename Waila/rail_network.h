@@ -630,12 +630,25 @@ namespace Waila::RailNetwork
 			return &views.emplace(node, std::move(v)).first->second;
 		};
 
-		// `seeds` are expanded whatever they are; every node reached after them
-		// that is a machine is kept and not walked past.
+		// `seeds` are expanded, except that an upstream seed that is a machine is
+		// kept. Every machine reached through a link is kept and not walked past,
+		// a seed included: a machine can take from the network and feed it too.
 		auto walk = [&](const std::vector<uint64_t>& seeds, bool upstream, std::vector<uint64_t>& machines)
 		{
-			std::unordered_set<uint64_t> seen(seeds.begin(), seeds.end());
+			std::unordered_set<uint64_t> seen;
 			std::vector<uint64_t> queue;
+			auto keep = [&](uint64_t machine)
+			{
+				if (std::find(machines.begin(), machines.end(), machine) != machines.end())
+					return true;
+				if (machines.size() >= maxMachines)
+				{
+					out.truncated = true;
+					return false;
+				}
+				machines.push_back(machine);
+				return true;
+			};
 			auto expand = [&](const NodeView& v)
 			{
 				for (const NodeLink& link : v.links)
@@ -647,10 +660,12 @@ namespace Waila::RailNetwork
 				const NodeView* v = view(seed);
 				if (!v)
 					continue;
-				if (upstream && v->kind == NodeKind::Machine)
+				if (v->kind != NodeKind::Machine)
+					seen.insert(seed);
+				else if (upstream)
 				{
-					if (std::find(machines.begin(), machines.end(), seed) == machines.end())
-						machines.push_back(seed);
+					if (!keep(seed))
+						return;
 					continue;
 				}
 				expand(*v);
@@ -662,12 +677,8 @@ namespace Waila::RailNetwork
 					continue;
 				if (v->kind == NodeKind::Machine)
 				{
-					if (machines.size() >= maxMachines)
-					{
-						out.truncated = true;
+					if (!keep(queue[i]))
 						return;
-					}
-					machines.push_back(queue[i]);
 					continue;
 				}
 				expand(*v);

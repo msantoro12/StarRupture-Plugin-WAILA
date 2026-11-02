@@ -1,6 +1,6 @@
-A rail card's now is measured: how many of each item crossed the rail in the last minute, counted from the drones on it. It reads ... while the first 20 seconds are counted, and a rail keeps counting for 90 seconds after you look away
-The From and To rows show each end's rate running full out under max and right now under now, from the same buildings as the totals, so the From rows add up to the item's max
-A building at a rail end that does not make the item counts as storage instead of showing what it takes in
+A rail card now shows what the machines attached to the rail's network can make, read from the game's own data, so it works with nothing moving and along the whole line, loaded or not: max is the makers' output with nobody pulling, min what is left with every machine using the item running full out, and now what is left with only the machines asking for it right now, all capped at what the rail carries
+The From and To rows name every machine making or taking the item, however far along the line, with its rate running full out under max and right now under now
+Storage and stations on a rail's network pass items along and never count as makers
 A machine card shows each ingredient and the product per minute as now / full speed, and a starved machine adds a red "short N" line for each ingredient it lacks (its whole per-minute need, since the game does not expose what is arriving). Figures no longer overlap at any ingredient count
 A machine card's output per minute now uses the machine's live speed, the same as the ingredient rows, so the two always agree at any speed
 A running machine card shows over each ingredient tile how many it takes in per minute at the machine's speed (a stalled machine reads 0)
