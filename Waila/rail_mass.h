@@ -84,8 +84,8 @@ namespace Waila::RailMass
 	// Same rules as above; false leaves perMin as it was.
 	bool ReadCapacity(Entity rail, float& perMin);
 
-	// What a storage holds, per item, from its inventory fragment's main
-	// container: the one its own card lists. The item pointers are valid only
+	// What a storage holds, per item, from both containers of its inventory
+	// fragment: its own card lists the one it keeps items in. The item pointers are valid only
 	// in the tick they were read. Same rules as above, with the stock's own
 	// gate; false leaves `out` empty.
 	bool ReadStored(Entity storage, std::vector<StoredItemEntry>& out);

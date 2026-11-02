@@ -372,15 +372,20 @@ namespace Waila::UI
 
 		// Each item's rows together: its rates, the machines making it and
 		// taking it, and its stock. An item only the storage holds is one row.
-		std::vector<RateRow> rows;
+		// When they do not all fit, every item keeps its own row and the
+		// machine and stock rows fill the room left, first item first.
+		std::vector<std::vector<RateRow>> items;
+		size_t total = 0;
 		for (const Waila::RailRateEntry& r : info.rates)
 		{
+			std::vector<RateRow>& rows = items.emplace_back();
 			RateRow row;
 			row.icon = Icons::ForItem(r.itemData);
 			if (!r.made)
 			{
 				row.name = r.displayName + ": " + StockText(r);
 				rows.push_back(std::move(row));
+				++total;
 				continue;
 			}
 			row.name = r.displayName;
@@ -397,10 +402,20 @@ namespace Waila::UI
 				stock.name = StockText(r);
 				rows.push_back(std::move(stock));
 			}
+			total += rows.size();
 		}
-		const size_t more = rows.size() > kMaxRateRows ? rows.size() - kMaxRateRows : 0;
-		for (size_t i = 0; i < rows.size() && i < kMaxRateRows; ++i)
-			out.rates.push_back(std::move(rows[i]));
+		size_t room  = kMaxRateRows > items.size() ? kMaxRateRows - items.size() : 0;
+		size_t shown = 0;
+		for (std::vector<RateRow>& rows : items)
+		{
+			if (shown >= kMaxRateRows)
+				break;
+			out.rates.push_back(std::move(rows[0]));
+			++shown;
+			for (size_t i = 1; i < rows.size() && room > 0; ++i, --room, ++shown)
+				out.rates.push_back(std::move(rows[i]));
+		}
+		const size_t more = total - shown;
 
 		if (out.rates.empty())
 			out.ratesNote = info.fromMass && !info.note.empty() ? info.note : "No sources found";
