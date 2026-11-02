@@ -1,3 +1,4 @@
+A machine card shows each ingredient and the product per minute as now / full speed, and a starved machine adds a red "short N" line for each ingredient it lacks (its whole per-minute need, since the game does not expose what is arriving). Figures no longer overlap at any ingredient count
 A machine card's output per minute now uses the machine's live speed, the same as the ingredient rows, so the two always agree at any speed
 A running machine card lists its ingredients under the recipe, one row each, with how many it takes in per minute at the machine's speed (a stalled machine reads 0)
 Drone rails show the crafters that feed them, one row per item, as three potentials in items per minute: max (the sources' output, capped at what the rail can carry at its drone speed and spacing), min (what is left if every machine taking the item off the line ahead runs full out) and now (what is left given the machines asking for it right now)

@@ -6,7 +6,7 @@
 
 - Raycast-based detection — identifies the building the player's crosshair is aimed at
 - Per-building info panels rendered via ImGui, including:
-  - **Crafters** — current recipe, crafting progress, speed multiplier, missing items / output-full flags, and each ingredient's items per minute at the machine's speed
+  - **Crafters** — current recipe, crafting progress, speed multiplier, missing items / output-full flags, and each ingredient's and the product's items per minute, now and at full speed at the machine's speed; a starved machine also shows what each missing ingredient is short by per minute
   - **Storage** — storage contents and capacity
   - **Power** — power consumption/production state
   - **Active Coolers** — cooling load and status
