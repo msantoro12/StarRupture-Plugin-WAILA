@@ -1,18 +1,4 @@
-A machine card shows each ingredient and the product per minute as now / full speed, and a starved machine adds a red "short N" line for each ingredient it lacks (its whole per-minute need, since the game does not expose what is arriving). Figures no longer overlap at any ingredient count
-A machine card's output per minute now uses the machine's live speed, the same as the ingredient rows, so the two always agree at any speed
-A running machine card shows over each ingredient tile how many it takes in per minute at the machine's speed (a stalled machine reads 0)
-Drone rails show the crafters that feed them, one row per item, as three potentials in items per minute: max (the sources' output, capped at what the rail can carry at its drone speed and spacing), min (what is left if every machine taking the item off the line ahead runs full out) and now (what is left given the machines asking for it right now)
-A stretch right after a machine's input shows less than the stretch before it. Machines are found from the rail layout, so a rail whose start is not loaded shows no machines ahead of it
-The rail's capacity is read on its own: where it cannot be read max shows ? and the rest of the row stays
-A rail card shows six rows in all, item rows first
-Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track, and through storage to the crafters filling it
-Each rail on a platform shows its own sources; a factory's input rails no longer show the factory they feed
-A lane's tracks stay apart even before the lane has loaded. Buildings that have not loaded do not count
-A rail passing through a drill's frame no longer shows the drill
-Idle crafters count with the recipe they are set to
-The card follows the camera, so it works from the building drone; Max Distance counts from the drone
-A rail card lists where its items come from and go to under its item rates, including machines, storage and stations out of render range
-Buildings of one kind making or taking the same item share one From or To row, with their count and their rates added up
-Buildings out of render range are named from the game's Mass data instead of reading "Out of range"; only a building the data cannot name reads "Unknown building" (no building data for it, or the name read is off on this build)
-A crafter at an end shows what it takes for an ingredient the rail carries, as well as what it makes
-A rail's item row is one total per item, summed over every source and every machine taking it, whether found from the rail layout or from the drones on the rail (out of render range too), each building counted once; the From and To rows stay under it
+- Drone rails show what feeds them in items per minute: max, min and now
+- Rail cards list where items come from and go to, with matching buildings grouped
+- Machine cards show each ingredient per minute, and a red "short N" when one is missing
+- Works from the building drone
