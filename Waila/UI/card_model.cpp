@@ -331,37 +331,35 @@ namespace Waila::UI
 
 	namespace
 	{
-		// The machines making the rail's items, then the ones taking them, under
-		// the item rates, in the rows left. Each shows what it makes or takes
-		// running full out under max and right now under now, summed over the
-		// line: a maker 0 while stalled (red), a consumer 0 while it is not
-		// asking for the item. min is the rail's, so it stays blank. Returns the
-		// rows left out.
-		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
+		// What the storage on the rail's network holds of an item: "4.0k in
+		// storage", or "12k in 3 storages".
+		std::string StockText(const Waila::RailRateEntry& r)
 		{
-			size_t shown = 0;
-			for (const Waila::RailPeerEntry& p : info.peers)
-			{
-				if (out.rates.size() >= kMaxRateRows)
-					break;
+			char count[24];
+			Draw::FormatNumber(count, sizeof(count), static_cast<float>(r.stored));
+			return std::string(count) + (r.storages > 1 ? " in " + std::to_string(r.storages) + " storages" : " in storage");
+		}
 
-				RateRow row;
-				row.icon = Icons::ForItem(p.itemData);
-				row.name = std::string(p.source ? "From " : "To ")
-					+ (p.count > 1 ? std::to_string(p.count) + "x " : std::string()) + p.buildingName
-					+ (p.itemName.empty() ? std::string() : ": " + p.itemName);
-				if (p.perMinFull >= 0.0f)
-					row.max = PerMin(p.perMinFull);
-				if (p.perMinNow >= 0.0f)
-				{
-					row.now = PerMin(p.perMinNow);
-					if (p.source && p.perMinNow <= 0.0f)
-						row.tone = Health::Bad;
-				}
-				out.rates.push_back(std::move(row));
-				++shown;
+		// The machines of one name making an item, or taking it, under its row:
+		// what they make or take running full out under max and right now under
+		// now, summed over the line: a maker 0 while stalled (red), a consumer
+		// 0 while it is not asking for the item. min is the rail's, so it stays
+		// blank.
+		RateRow PeerRow(const Waila::RailPeerEntry& p)
+		{
+			RateRow row;
+			row.icon = Icons::ForItem(p.itemData);
+			row.name = std::string(p.source ? "From " : "To ")
+				+ (p.count > 1 ? std::to_string(p.count) + "x " : std::string()) + p.buildingName;
+			if (p.perMinFull >= 0.0f)
+				row.max = PerMin(p.perMinFull);
+			if (p.perMinNow >= 0.0f)
+			{
+				row.now = PerMin(p.perMinNow);
+				if (p.source && p.perMinNow <= 0.0f)
+					row.tone = Health::Bad;
 			}
-			return info.peers.size() - shown;
+			return row;
 		}
 	}
 
@@ -372,27 +370,43 @@ namespace Waila::UI
 		out.hasRates = true;
 		out.chip     = info.filterName;
 
-		for (size_t i = 0; i < info.rates.size() && i < kMaxRateRows; ++i)
+		// Each item's rows together: its rates, the machines making it and
+		// taking it, and its stock. An item only the storage holds is one row.
+		std::vector<RateRow> rows;
+		for (const Waila::RailRateEntry& r : info.rates)
 		{
-			const Waila::RailRateEntry& r = info.rates[i];
-
 			RateRow row;
 			row.icon = Icons::ForItem(r.itemData);
+			if (!r.made)
+			{
+				row.name = r.displayName + ": " + StockText(r);
+				rows.push_back(std::move(row));
+				continue;
+			}
 			row.name = r.displayName;
 			row.min  = PerMin(r.perMinMin);
 			row.now  = PerMin(r.perMinNow);
 			row.max  = PerMin(r.perMinMax);
-			out.rates.push_back(std::move(row));
+			rows.push_back(std::move(row));
+			for (const Waila::RailPeerEntry& p : r.peers)
+				rows.push_back(PeerRow(p));
+			if (r.stored >= 0 && r.storages > 0)
+			{
+				RateRow stock;
+				stock.icon = Icons::ForItem(r.itemData);
+				stock.name = StockText(r);
+				rows.push_back(std::move(stock));
+			}
 		}
-		size_t more = info.rates.size() > kMaxRateRows ? info.rates.size() - kMaxRateRows : 0;
-		if (info.fromMass)
-			more += AddRailPeers(info, out);
+		const size_t more = rows.size() > kMaxRateRows ? rows.size() - kMaxRateRows : 0;
+		for (size_t i = 0; i < rows.size() && i < kMaxRateRows; ++i)
+			out.rates.push_back(std::move(rows[i]));
 
 		if (out.rates.empty())
 			out.ratesNote = info.fromMass && !info.note.empty() ? info.note : "No sources found";
 
 		char buf[48];
-		if (!info.peers.empty())
+		if (info.fromCount + info.destCount > 0)
 		{
 			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.truncated ? "+" : "");
 			out.statusText = buf;
