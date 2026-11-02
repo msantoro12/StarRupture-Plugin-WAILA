@@ -40,8 +40,8 @@ namespace Waila
 		// the next refresh.
 		//
 		// The walk is the game's own rail network from its Mass data, loaded or
-		// not (FindAttached, rail_mass.h). Without the Mass reader it falls back
-		// to the loaded rail layout: only actors the game has spawned are visible
+		// not (FindAttached, rail_mass.h). When the Mass reader is off, or its walk
+		// finds no maker, the loaded rail layout stands in: only actors the game has spawned are visible
 		// to GetAllActorsOfClass, and player buildings are streamed in around the
 		// camera (INFERRED), so that one can cut a long rail short.
 		struct ItemInfo
@@ -468,7 +468,8 @@ namespace Waila
 				if (g_cache.found && Features::ShowRailCapacity())
 					RailMass::ReadCapacity(entity, g_cache.capacity);
 			}
-			else if (Features::ShowDroneRails())
+
+			if ((!fromMass || g_cache.parts.empty()) && Features::ShowDroneRails())
 			{
 				UWorld* world = PluginSdkRuntime::GetWorld();
 				RailNetwork::Scene scene;

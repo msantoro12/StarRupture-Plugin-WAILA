@@ -528,6 +528,40 @@ namespace
 	}
 
 	// A rail straight out of a machine; a two-way rail; a loop.
+	// A production line on one rail spine: M1 feeds poles 11 to 15, and M2
+	// takes off pole 12 and puts its output back on at pole 13, so it feeds
+	// the line and takes from it. The same for a storage hub S that F and B
+	// fill and B takes from.
+	void TestAttachedSpine()
+	{
+		FakeNet net;
+		net.Node(1, NodeKind::Machine);
+		net.Node(2, NodeKind::Machine);
+		for (uint64_t pole = 11; pole <= 15; ++pole)
+			net.Node(pole, NodeKind::PassThrough);
+		net.Rail(1, 11);
+		for (uint64_t pole = 11; pole < 15; ++pole)
+			net.Rail(pole, pole + 1);
+		net.Rail(12, 2);
+		net.Rail(2, 13);
+		Attached found = FindAttached({ 13 }, net, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ 1, 2 }, "both makers on a spine are upstream");
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "a maker taking off the spine is a consumer too");
+
+		FakeNet hub;
+		hub.Node(1, NodeKind::Machine);
+		hub.Node(2, NodeKind::Machine);
+		hub.Node(30, NodeKind::Storage);
+		hub.Node(20, NodeKind::PassThrough);
+		hub.Rail(1, 30);
+		hub.Rail(2, 30);
+		hub.Rail(30, 2);
+		hub.Rail(30, 20);
+		found = FindAttached({ 30 }, hub, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ 1, 2 }, "both machines filling a hub are upstream");
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "the machine taking from the hub is a consumer");
+	}
+
 	void TestAttachedEdges()
 	{
 		FakeNet net;
@@ -574,6 +608,7 @@ int main()
 	TestEndLines();
 	TestAttachedLongLine();
 	TestAttachedEdges();
+	TestAttachedSpine();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");
