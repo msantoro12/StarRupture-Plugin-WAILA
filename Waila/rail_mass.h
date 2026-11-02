@@ -16,18 +16,21 @@ namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; cl
 // machine's crafting fragment and requests say what it makes and wants.
 //
 // Every member of every Mass fragment and every struct stride comes from the
-// loader by name (ResolveField). Keys are declared as three features: "rail
-// sources" (Waila::Features::RailSources), "rail capacity" and "rail
-// buildings". The last two list the same core keys, so a name the game no
-// longer has turns off only what it feeds: the sources, the max, or the names
-// of the buildings at the rail's ends.
+// loader by name (ResolveField). Keys are declared as five features: "rail
+// sources" (Waila::Features::RailSources), "rail capacity", "rail
+// buildings", "rail tracks" and "rail stock". The last four list the same
+// core keys, so a name the game no longer has turns off only what it feeds:
+// the sources, the max, the names of the buildings at the rail's ends,
+// keeping a lane's tracks apart, or the stock lines.
+namespace Waila { struct StoredItemEntry; }
+
 namespace Waila::RailMass
 {
 	// A Mass entity, as the engine's FMassEntityHandle packs it: Index in the
 	// low half, SerialNumber in the high half. 0 is no entity.
 	using Entity = uint64_t;
 
-	// Declares the three features with every key the reader needs, and
+	// Declares the features with every key the reader needs, and
 	// `alsoNeeds`, the keys of the parts the sources build on (the building and
 	// item names they show). Call first in OnPluginLoadHooks, with the other
 	// features.
@@ -80,4 +83,10 @@ namespace Waila::RailMass
 	// speed and spacing. A drone carries one item, so this holds for any item.
 	// Same rules as above; false leaves perMin as it was.
 	bool ReadCapacity(Entity rail, float& perMin);
+
+	// What a storage holds, per item, from its inventory fragment's main
+	// container: the one its own card lists. The item pointers are valid only
+	// in the tick they were read. Same rules as above, with the stock's own
+	// gate; false leaves `out` empty.
+	bool ReadStored(Entity storage, std::vector<StoredItemEntry>& out);
 }

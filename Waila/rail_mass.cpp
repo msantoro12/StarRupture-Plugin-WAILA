@@ -8,6 +8,7 @@
 #include "Chimera_classes.hpp"
 #include "AuItems_classes.hpp"
 #include "AuCrafting_classes.hpp"
+#include "storage_detector.h"
 #include "Chimera_structs.hpp"
 
 #include <windows.h>
@@ -109,6 +110,9 @@ namespace Waila::RailMass
 			&kHandleSize, &kPersistentSize, &kSimpleItemSize, &kRequestSize, &kSocketSize,
 		};
 
+		// The stock read's own: a storage container's size.
+		SizeRow kContainerSize   = RAIL_SIZE_ROW("FCrItemsStorageContainer");
+
 		// A member: its size is a size row's, or fixed for a pointer, float,
 		// bool or TArray header.
 		struct Member
@@ -180,6 +184,22 @@ namespace Waila::RailMass
 
 		Member* const kCapacityMembers[] = { &mLineMoveSpeed, &mLineSlotLength, &mIsStartLine, &mHalfSlotLength };
 
+		// The socket pairs, a feature of its own: the game gives both sockets of
+		// a pair (each track of a drone lane) one invisible connector, and drones
+		// cross the node from one socket of a pair to the other only. Its miss
+		// lets a lane's tracks meet on the card and turns off nothing else.
+		Member mSocketPair     = RAIL_MEMBER(FCrLogisticsSocketRuntimeData, SocketPairInvisibleConnector, &kPersistentSize, 0);
+
+		// The stock read, a feature of its own: a storage entity's inventory
+		// fragment holds what it stores in the main container, the one the
+		// storage's own card lists. Its miss turns off the stock lines and
+		// nothing else.
+		Member mMainInventory  = RAIL_MEMBER(FCrInventoryFragment, MainInventoryContainer, &kContainerSize, 0);
+
+		Member* const kTrackMembers[] = { &mSocketPair };
+
+		Member* const kStockMembers[] = { &mMainInventory };
+
 		// The fragments' reflection objects, found by name on first use.
 		const UScriptStruct* g_lineStruct      = nullptr;
 		const UScriptStruct* g_paramsStruct    = nullptr;
@@ -190,16 +210,22 @@ namespace Waila::RailMass
 		const UScriptStruct* g_socketsStruct   = nullptr;
 		const UScriptStruct* g_logisticsStruct = nullptr;
 		const UScriptStruct* g_containerStruct = nullptr;
+		const UScriptStruct* g_inventoryStruct = nullptr;
 
 		PluginMap::Feature g_feature{ "rail-sources", "Where a drone rail's items come from and go to", {}, {} };
 		PluginMap::Feature g_capacityFeature{ "rail-capacity", "How many items a minute a drone rail carries", {}, {} };
 		PluginMap::Feature g_buildingFeature{ "rail-buildings", "Which building a rail's far ends are", {}, {} };
+		PluginMap::Feature g_trackFeature{ "rail-tracks", "Keeping a drone lane's tracks apart", {}, {} };
+		PluginMap::Feature g_stockFeature{ "rail-stock", "What the storage on a rail's network holds", {}, {} };
 		bool g_resolved         = false;
 		bool g_capacityResolved = false;
 		bool g_buildingResolved = false;
+		bool g_trackResolved    = false;
+		bool g_stockResolved    = false;
 		bool g_faulted          = false;
 		bool g_capacityFaulted  = false;
 		bool g_buildingFaulted  = false;
+		bool g_stockFaulted     = false;
 
 		// Bounds on what one array can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
@@ -308,6 +334,21 @@ namespace Waila::RailMass
 			return item && UKismetSystemLibrary::IsValid(item) ? item : nullptr;
 		}
 
+		// The socket pair a socket is on, as a key: its invisible connector's id,
+		// which the game sets on both sockets of a pair at load (from the
+		// socket's SocketPairIndex). 0 when the socket has no pair: the id's
+		// first field is then INDEX_NONE.
+		uint64_t TrackOf(const uint8_t* socket)
+		{
+			const uint8_t* id = socket + mSocketPair.Offset();
+			if (ReadAt<int32_t>(id, 0) == -1)
+				return 0;
+			uint64_t key = 14695981039346656037ull;   // FNV-1a over the id
+			for (uint32_t i = 0; i < kPersistentSize.size; ++i)
+				key = (key ^ id[i]) * 1099511628211ull;
+			return key ? key : 1;
+		}
+
 		// LogisticsType values (ECrMassLogisticsType) the walk tells apart.
 		constexpr uint8_t kTypeStorage        = 1;
 		constexpr uint8_t kTypeLineNode       = 5;
@@ -345,6 +386,7 @@ namespace Waila::RailMass
 			if (!sockets)
 				return;
 			const RawArray list = ArrayAt(sockets, mSockets.Offset());
+			const bool tracks = g_trackResolved && g_trackFeature.On();
 			for (int32_t i = 0; i < list.num; ++i)
 			{
 				const uint8_t* socket = list.data + static_cast<size_t>(i) * kSocketSize.size;
@@ -358,6 +400,8 @@ namespace Waila::RailMass
 				link.other = start == node ? end : end == node ? start : 0;
 				link.in    = end == node || (twoWay && start == node);
 				link.out   = start == node || (twoWay && end == node);
+				link.rail  = rail;
+				link.track = tracks ? TrackOf(socket) : 0;
 				if (link.other && link.other != node)
 					out.links.push_back(link);
 			}
@@ -472,6 +516,20 @@ namespace Waila::RailMass
 				out = static_cast<UCrBuildingData*>(placement);
 		}
 
+		// What a storage holds: its inventory fragment's main container, the
+		// one UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal
+		// hands a storage's card.
+		void ReadStoredImpl(Entity storage, std::vector<StoredItemEntry>& out, bool& found)
+		{
+			const void* manager = Manager(PluginSdkRuntime::GetWorld());
+			const uint8_t* inventory = manager ? Fragment(manager, storage, Found(g_inventoryStruct, "CrInventoryFragment")) : nullptr;
+			if (!inventory)
+				return;
+			found = true;
+			int32_t usedSlots = 0;
+			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mMainInventory.Offset()), out, usedSlots);
+		}
+
 		// A bad pointer in the game's data must not take the game down.
 		// A fault turns off the reads that share `faulted`; the capacity and the
 		// building reads keep their own, so one of them failing leaves the rest.
@@ -507,9 +565,9 @@ namespace Waila::RailMass
 
 	bool Declare(IPluginSelf* self, IPluginHookScanner* scanner, const std::vector<const char*>& alsoNeeds)
 	{
-		// The keys every rail read starts from. The capacity and building reads
-		// list them too, so their own misses turn off only themselves while a
-		// miss here turns off all three.
+		// The keys every rail read starts from. The other features list them
+		// too, so their own misses turn off only themselves while a miss here
+		// turns off all of them.
 		std::vector<const char*> core;
 		for (const SizeRow* row : kSizeRows)
 			core.push_back(row->key);
@@ -534,7 +592,17 @@ namespace Waila::RailMass
 		for (const Member* member : kBuildingMembers)
 			g_buildingFeature.keys.push_back(member->spec.key);
 
-		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_buildingFeature);
+		g_trackFeature.keys = core;
+		for (const Member* member : kTrackMembers)
+			g_trackFeature.keys.push_back(member->spec.key);
+
+		g_stockFeature.keys = core;
+		g_stockFeature.keys.push_back(kContainerSize.key);
+		for (const Member* member : kStockMembers)
+			g_stockFeature.keys.push_back(member->spec.key);
+
+		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_buildingFeature,
+			g_trackFeature, g_stockFeature);
 	}
 
 	void Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -570,6 +638,12 @@ namespace Waila::RailMass
 		bool building = true;
 		for (Member* member : kBuildingMembers)
 			building = resolveMember(*member) && building;
+		bool tracks = true;
+		for (Member* member : kTrackMembers)
+			tracks = resolveMember(*member) && tracks;
+		bool stock = ResolveSize(scanner, self, kContainerSize);
+		for (Member* member : kStockMembers)
+			stock = resolveMember(*member) && stock;
 
 		const uintptr_t getSubsystem = ResolveFunction(scanner, self, kKeyGetSubsystem, kPatGetSubsystem, kAtGetSubsystem);
 		const uintptr_t getFragment  = ResolveFunction(scanner, self, kKeyGetFragment, kPatGetFragment, kAtGetFragment);
@@ -587,12 +661,18 @@ namespace Waila::RailMass
 		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle && getShared;
 		g_capacityResolved = capacity;
 		g_buildingResolved = building;
+		g_trackResolved    = tracks;
+		g_stockResolved    = stock;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
 		else if (!g_capacityResolved || !g_capacityFeature.On())
 			LOG_WARN("RailMass: the rail capacity is off on this build; a rail shows no max, the rest of its card is unaffected");
 		if (g_resolved && g_feature.On() && (!g_buildingResolved || !g_buildingFeature.On()))
 			LOG_WARN("RailMass: building names are off on this build; a rail's ends read Unknown building, the rest of its card is unaffected");
+		if (g_resolved && g_feature.On() && (!g_trackResolved || !g_trackFeature.On()))
+			LOG_WARN("RailMass: lane tracks are not told apart on this build; a rail on a lane lists every track's machines, the rest of its card is unaffected");
+		if (g_resolved && g_feature.On() && (!g_stockResolved || !g_stockFeature.On()))
+			LOG_WARN("RailMass: storage stock is off on this build; a rail shows no stock lines, the rest of its card is unaffected");
 	}
 
 	bool Available()
@@ -673,5 +753,17 @@ namespace Waila::RailMass
 		if (!CapacityAvailable())
 			return false;
 		return Guarded([&] { ReadCapacityImpl(rail, perMin); }, g_capacityFaulted);
+	}
+
+	bool ReadStored(Entity storage, std::vector<StoredItemEntry>& out)
+	{
+		out.clear();
+		if (!Available() || g_stockFaulted || !g_stockResolved || !g_stockFeature.On())
+			return false;
+		bool found = false;
+		const bool ok = Guarded([&] { ReadStoredImpl(storage, out, found); }, g_stockFaulted) && found;
+		if (!ok)
+			out.clear();
+		return ok;
 	}
 }

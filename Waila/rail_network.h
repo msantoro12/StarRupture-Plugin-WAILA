@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -580,12 +581,16 @@ namespace Waila::RailNetwork
 		Machine,       // a producer or consumer: the network ends there
 	};
 
-	// One rail at a node, by the node at its other end.
+	// One rail at a node, by the node at its other end. A node with paired
+	// sockets (each track of a drone lane) passes items only between the two
+	// rails of a pair; the rails at sockets without a pair all meet.
 	struct NodeLink
 	{
 		uint64_t other = 0;
 		bool     in    = false;   // items come into the node on it
 		bool     out   = false;   // items leave the node on it
+		uint64_t rail  = 0;       // the rail itself, 0 when not known
+		uint64_t track = 0;       // the socket pair it is on here, 0 for a socket without one
 	};
 
 	struct NodeView
@@ -598,19 +603,24 @@ namespace Waila::RailNetwork
 	{
 		std::vector<uint64_t> upstream;     // machines whose output can reach the rail
 		std::vector<uint64_t> downstream;   // machines the upstream machines can feed
+		std::vector<uint64_t> upstreamStorage;     // storage walked through upstream: its stock can leave on the rail
+		std::vector<uint64_t> downstreamStorage;   // storage walked through downstream
 		bool                  truncated = false;
 	};
 
 	// The machines attached to a rail whose items leave the nodes in `from`
 	// (its start, and its end too when it runs both ways). Upstream walks back
-	// against the flow from those nodes; downstream walks on from every
-	// upstream machine, so it also finds the machines on branches before the
-	// rail. Pass-through nodes and storage are walked through, machines end a
-	// walk. `read(node, NodeView&)` returns false for a node it cannot read.
-	// At most maxNodes nodes are read and maxMachines machines kept each way;
-	// truncated is set when either bites.
+	// against the flow from those nodes; downstream walks on from them and
+	// from every upstream machine, so it also finds the machines on branches
+	// before the rail. Pass-through nodes and storage are walked through,
+	// machines end a walk. At a node with paired sockets the walk stays on the
+	// track it came by: `rail` names the rail the walk starts from (0 follows
+	// every rail at the nodes in `from`). `read(node, NodeView&)` returns false
+	// for a node it cannot read. At most maxNodes nodes are read and
+	// maxMachines machines kept each way; truncated is set when either bites.
 	template <class Read>
-	Attached FindAttached(const std::vector<uint64_t>& from, Read&& read, size_t maxNodes, size_t maxMachines)
+	Attached FindAttached(const std::vector<uint64_t>& from, Read&& read, size_t maxNodes, size_t maxMachines,
+	                      uint64_t rail = 0)
 	{
 		Attached out;
 		std::unordered_map<uint64_t, NodeView> views;
@@ -630,13 +640,18 @@ namespace Waila::RailNetwork
 			return &views.emplace(node, std::move(v)).first->second;
 		};
 
-		// `seeds` are expanded, except that an upstream seed that is a machine is
-		// kept. Every machine reached through a link is kept and not walked past,
-		// a seed included: a machine can take from the network and feed it too.
-		auto walk = [&](const std::vector<uint64_t>& seeds, bool upstream, std::vector<uint64_t>& machines)
+		// A node to walk from, and the rail the walk reached it by (0 for none).
+		using Step = std::pair<uint64_t, uint64_t>;
+
+		// An upstream seed that is a machine is kept, every other seed expanded.
+		// Every machine reached through a link is kept and not walked past, a
+		// seed included: a machine can take from the network and feed it too.
+		auto walk = [&](const std::vector<Step>& seeds, bool upstream, std::vector<uint64_t>& machines,
+		                std::vector<uint64_t>& storage)
 		{
-			std::unordered_set<uint64_t> seen;
-			std::vector<uint64_t> queue;
+			std::set<Step> reached;    // a node, and the rail it was reached by
+			std::set<Step> expanded;   // a node, and the track it was walked from
+			std::vector<Step> queue;
 			auto keep = [&](uint64_t machine)
 			{
 				if (std::find(machines.begin(), machines.end(), machine) != machines.end())
@@ -649,44 +664,63 @@ namespace Waila::RailNetwork
 				machines.push_back(machine);
 				return true;
 			};
-			auto expand = [&](const NodeView& v)
+			auto expand = [&](const Step& at, const NodeView& v)
 			{
+				// The track of the rail the node was reached by. 0 (a socket
+				// without a pair, no rail, or a machine) follows every rail.
+				uint64_t track = 0;
+				if (v.kind != NodeKind::Machine && at.second)
+					for (const NodeLink& link : v.links)
+						if (link.rail == at.second)
+						{
+							track = link.track;
+							break;
+						}
+				if (!expanded.insert({ at.first, track }).second)
+					return;
+				if (v.kind == NodeKind::Storage && std::find(storage.begin(), storage.end(), at.first) == storage.end())
+					storage.push_back(at.first);
 				for (const NodeLink& link : v.links)
-					if ((upstream ? link.in : link.out) && link.other && seen.insert(link.other).second)
-						queue.push_back(link.other);
+					if ((!track || link.track == track) && (upstream ? link.in : link.out) && link.other
+						&& reached.insert({ link.other, link.rail }).second)
+						queue.push_back({ link.other, link.rail });
 			};
-			for (uint64_t seed : seeds)
+			for (const Step& seed : seeds)
 			{
-				const NodeView* v = view(seed);
+				const NodeView* v = view(seed.first);
 				if (!v)
 					continue;
-				if (v->kind != NodeKind::Machine)
-					seen.insert(seed);
-				else if (upstream)
+				if (v->kind == NodeKind::Machine && upstream)
 				{
-					if (!keep(seed))
+					if (!keep(seed.first))
 						return;
 					continue;
 				}
-				expand(*v);
+				expand(seed, *v);
 			}
 			for (size_t i = 0; i < queue.size(); ++i)
 			{
-				const NodeView* v = view(queue[i]);
+				const Step at = queue[i];
+				const NodeView* v = view(at.first);
 				if (!v)
 					continue;
 				if (v->kind == NodeKind::Machine)
 				{
-					if (!keep(queue[i]))
+					if (!keep(at.first))
 						return;
 					continue;
 				}
-				expand(*v);
+				expand(at, *v);
 			}
 		};
 
-		walk(from, true, out.upstream);
-		walk(out.upstream, false, out.downstream);
+		std::vector<Step> seeds;
+		for (uint64_t node : from)
+			seeds.push_back({ node, rail });
+		walk(seeds, true, out.upstream, out.upstreamStorage);
+		for (uint64_t machine : out.upstream)
+			seeds.push_back({ machine, 0 });
+		walk(seeds, false, out.downstream, out.downstreamStorage);
 		return out;
 	}
 

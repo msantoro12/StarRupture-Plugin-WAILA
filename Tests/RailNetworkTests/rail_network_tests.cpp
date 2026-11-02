@@ -482,6 +482,13 @@ namespace
 			nodes[a].links.push_back({ b, twoWay, true });
 			nodes[b].links.push_back({ a, true, twoWay });
 		}
+		// A one-way rail named `rail`, at a socket pair (a lane's track) at
+		// either end, 0 for a socket without one.
+		void Rail(uint64_t a, uint64_t b, uint64_t rail, uint64_t trackAtA, uint64_t trackAtB)
+		{
+			nodes[a].links.push_back({ b, false, true, rail, trackAtA });
+			nodes[b].links.push_back({ a, true, false, rail, trackAtB });
+		}
 		bool operator()(uint64_t id, NodeView& out)
 		{
 			++reads;
@@ -562,6 +569,34 @@ namespace
 		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "the machine taking from the hub is a consumer");
 	}
 
+	// A drone lane L is one node with a socket pair per track. Maker M1 feeds
+	// track 1 through storage S, maker M2 feeds track 2; each track leaves L to
+	// its own consumer. Aimed at the rail leaving track 1, only that track's
+	// machines are attached, and the storage it passes is listed.
+	void TestAttachedLaneTracks()
+	{
+		const uint64_t M1 = 1, M2 = 2, C1 = 3, C2 = 4, S = 5, L = 10;
+		FakeNet net;
+		for (uint64_t m : { M1, M2, C1, C2 })
+			net.Node(m, NodeKind::Machine);
+		net.Node(S, NodeKind::Storage);
+		net.Node(L, NodeKind::PassThrough);
+		net.Rail(M1, S, 100, 0, 0);
+		net.Rail(S, L, 101, 0, 1);
+		net.Rail(M2, L, 102, 0, 2);
+		net.Rail(L, C1, 103, 1, 0);
+		net.Rail(L, C2, 104, 2, 0);
+
+		Attached found = FindAttached({ L }, net, 1024, 256, 103);
+		Check(Set(found.upstream) == std::set<uint64_t>{ M1 }, "a lane track has its own maker only");
+		Check(Set(found.downstream) == std::set<uint64_t>{ C1 }, "...and its own consumer");
+		Check(found.upstreamStorage == std::vector<uint64_t>{ S }, "the storage up the track is listed");
+		Check(found.downstreamStorage == std::vector<uint64_t>{ S }, "...and walked again from its maker");
+
+		found = FindAttached({ L }, net, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ M1, M2 }, "with no rail named, every track meets");
+	}
+
 	void TestAttachedEdges()
 	{
 		FakeNet net;
@@ -609,6 +644,7 @@ int main()
 	TestAttachedLongLine();
 	TestAttachedEdges();
 	TestAttachedSpine();
+	TestAttachedLaneTracks();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");
