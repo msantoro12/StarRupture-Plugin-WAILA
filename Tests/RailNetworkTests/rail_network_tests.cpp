@@ -1,7 +1,7 @@
 // Console tests for Waila/rail_network.h: a few hand-built layouts, the rails
 // around a captured supermagnet platform (fixtures\supermagnet-platform.txt),
-// then the one-row-per-item sums of a rail card, its From/To lines and the
-// meter that measures what crosses a rail.
+// the walk to the machines attached to a rail, then the one-row-per-item sums
+// of a rail card and its From/To lines.
 // Prints each failure and returns non-zero when any check fails.
 
 #include "rail_network.h"
@@ -367,68 +367,72 @@ namespace
 
 	FlowPart Maker(uint64_t building, const std::string& item, float full)
 	{
-		return { building, item, true, true, full };
+		return { building, item, true, full };
 	}
 
 	FlowPart Taker(uint64_t building, const std::string& item, float full)
 	{
-		return { building, item, false, true, full };
+		return { building, item, false, full };
 	}
 
-	// Three fabricators make wolfram plate, one seen both through the layout and
-	// through the drones; a furnace makes chemicals. Five furnaces and a press
-	// take plates, two of them seen twice; two furnaces take chemicals. One row
-	// per item, each building counted once, the rates summed.
+	FlowPart Requesting(FlowPart part, bool requesting)
+	{
+		part.now = requesting ? part.full : 0.0f;
+		return part;
+	}
+
+	// Three fabricators make wolfram plate, one found twice; a furnace makes
+	// chemicals. Five furnaces and a press take plates, two of them found
+	// twice; two furnaces take chemicals. One row per item, each machine
+	// counted once, the rates summed.
 	void TestFlowsOneRowPerItem()
 	{
 		const std::vector<FlowPart> parts = {
-			// The rail layout.
 			Maker(1, "Plate", 30), Maker(2, "Plate", 30), Maker(3, "Plate", 30),
-			Taker(10, "Plate", 10), Taker(11, "Plate", 10), Taker(12, "Plate", 10),
-			Taker(10, "Acid", 10),   // the furnace's other input, not on this rail
-			// The drones: fabricator 3 and furnaces 10 and 11 again, then more.
-			Maker(3, "Plate", 30), Taker(10, "Plate", 10), Taker(11, "Plate", 10),
-			Taker(13, "Plate", 10), Taker(14, "Plate", 10), Taker(15, "Plate", 20),
+			Requesting(Taker(10, "Plate", 10), true), Requesting(Taker(11, "Plate", 10), false),
+			Requesting(Taker(12, "Plate", 10), true),
+			Requesting(Taker(10, "Acid", 10), true),   // the furnace's other input, not made here
+			Maker(3, "Plate", 30), Requesting(Taker(10, "Plate", 10), true), Requesting(Taker(11, "Plate", 10), false),
+			Requesting(Taker(13, "Plate", 10), false), Requesting(Taker(14, "Plate", 10), false),
+			Requesting(Taker(15, "Plate", 20), true),
 			Maker(4, "Chemicals", 20),
-			Taker(10, "Chemicals", 5), Taker(16, "Chemicals", 5),
+			Requesting(Taker(10, "Chemicals", 5), false), Requesting(Taker(16, "Chemicals", 5), true),
 		};
 
 		const std::vector<ItemFlow> flows = SumFlows(parts, 480.0f);
-		Check(flows.size() == 2, "one row per carried item (got " + std::to_string(flows.size()) + ")");
-		Check(!FlowOf(flows, "Acid"), "an item nothing on the rail supplies gets no row");
+		Check(flows.size() == 2, "one row per made item (got " + std::to_string(flows.size()) + ")");
+		Check(!FlowOf(flows, "Acid"), "an item nothing attached makes gets no row");
 
 		const ItemFlow* plate = FlowOf(flows, "Plate");
 		Check(plate && plate->sources == 3 && plate->consumers == 6, "plate: 3 sources, 6 consumers, duplicates counted once");
 		Check(plate && Near(plate->max, 90), "plate max: 3 x 30");
 		Check(plate && Near(plate->min, 20), "plate min: 90 - (5 x 10 + 20)");
+		Check(plate && Near(plate->now, 50), "plate now: 90 - (10 + 10 + 20) requesting");
 
 		const ItemFlow* chem = FlowOf(flows, "Chemicals");
 		Check(chem && chem->sources == 1 && chem->consumers == 2, "chemicals: 1 source, 2 consumers");
-		Check(chem && Near(chem->max, 20) && Near(chem->min, 10), "chemicals: 20, 10");
+		Check(chem && Near(chem->max, 20) && Near(chem->min, 10) && Near(chem->now, 15), "chemicals: 20, 10, 15");
 		Check(flows.front().item == "Plate", "the biggest flow comes first");
 	}
 
-	// The rail caps the supply; nothing goes negative; an unread source leaves
-	// its figures unknown; stock supplies at the rail's rate.
+	// The rail caps all three; nothing goes negative; an unread rate leaves
+	// what it feeds unknown.
 	void TestFlowsLimits()
 	{
-		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 600), Taker(2, "A", 900) }, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 0), "capped at the rail, floored at 0");
+		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 600), Requesting(Taker(2, "A", 900), false) }, 480.0f);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 0) && Near(flows[0].now, 480), "capped at the rail, floored at 0");
+
+		flows = SumFlows({ Maker(1, "A", 600), Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(Near(flows[0].min, 480) && Near(flows[0].now, 480), "what is left is capped too");
 
 		flows = SumFlows({ Maker(1, "A", 60), Maker(2, "A", -1) }, 480.0f);
-		Check(flows[0].max < 0 && flows[0].min < 0, "an unread source makes the row unknown");
+		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "an unread source makes the row unknown");
+
+		flows = SumFlows({ Maker(1, "A", 60), Taker(2, "A", 30) }, 480.0f);
+		Check(Near(flows[0].min, 30) && flows[0].now < 0, "an unread request leaves now unknown");
 
 		flows = SumFlows({ Maker(1, "A", 60) }, -1.0f);
-		Check(flows[0].max < 0 && Near(flows[0].min, 60), "no capacity: no max, min from the sources");
-
-		const FlowPart stock{ 7, "A", true, false };
-		const FlowPart bin{ 8, "A", false, false };
-		flows = SumFlows({ stock, bin, Taker(2, "A", 30) }, 120.0f);
-		Check(flows[0].sources == 1 && flows[0].consumers == 2, "storage counts as a building at either end");
-		Check(Near(flows[0].max, 120) && Near(flows[0].min, 90), "storage alone supplies at the rail's rate");
-
-		flows = SumFlows({ stock, Maker(1, "A", 30) }, 120.0f);
-		Check(Near(flows[0].max, 30), "with a crafter source, the crafters set the supply");
+		Check(Near(flows[0].max, 60) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "no capacity: uncapped");
 	}
 
 	FlowPart Named(FlowPart part, const std::string& name, float now)
@@ -447,53 +451,107 @@ namespace
 			Named(Taker(10, "Plate", 10), "Furnace", 0),
 			Named(Maker(1, "Plate", 120), "Fabricator", 120),
 			Named(Maker(2, "Plate", 120), "Fabricator", 0),
-			Named(Maker(2, "Plate", 120), "Fabricator", 0),   // seen again by the drones
+			Named(Maker(2, "Plate", 120), "Fabricator", 0),   // found twice
 			Named(Maker(3, "Plate", 120), "Fabricator", -1),  // state unread
 			Named(Taker(11, "Plate", 90), "Mega Press", 90),
-			Named(Taker(10, "Acid", 10), "Furnace", 0),       // not on this rail
-			Named(FlowPart{ 7, "Plate", true, false }, "Storage", -1),
+			Named(Taker(10, "Acid", 10), "Furnace", 0),       // not made here
 		};
 		const std::vector<EndRow> rows = GroupEnds(parts, { "Plate" });
-		Check(rows.size() == 4, "fabricators, storage, furnace, press (got " + std::to_string(rows.size()) + ")");
-		if (rows.size() != 4)
+		Check(rows.size() == 3, "fabricators, furnace, press (got " + std::to_string(rows.size()) + ")");
+		if (rows.size() != 3)
 			return;
 		Check(rows[0].source && rows[0].name == "Fabricator" && rows[0].count == 3, "3x Fabricator first, counted once each");
 		Check(Near(rows[0].full, 360) && Near(rows[0].now, 120), "fabricators: 360 full, 120 now (unread left out)");
-		Check(rows[1].source && rows[1].name == "Storage" && rows[1].full < 0 && rows[1].now < 0, "storage: no rate");
-		Check(!rows[2].source && rows[2].name == "Furnace" && Near(rows[2].full, 10) && Near(rows[2].now, 0), "furnace: 10, stalled");
-		Check(!rows[3].source && rows[3].name == "Mega Press" && Near(rows[3].full, 90), "press: 90");
+		Check(!rows[1].source && rows[1].name == "Furnace" && Near(rows[1].full, 10) && Near(rows[1].now, 0), "furnace: 10, not requesting");
+		Check(!rows[2].source && rows[2].name == "Mega Press" && Near(rows[2].full, 90), "press: 90");
 
 		const std::vector<ItemFlow> flows = SumFlows(parts, 480.0f);
 		Check(Near(FlowOf(flows, "Plate")->output, rows[0].full), "the row's output is the From lines' full rates");
 	}
 
-	// The meter counts a drone once per arrival on the lane, leaves out the ones
-	// already there at the start, waits before giving a rate and forgets passes
-	// past the window.
-	void TestFlowMeter()
+	// A fake network for FindAttached: node id to its kind and links.
+	struct FakeNet
 	{
-		using Lane = std::vector<FlowMeter::OnLane>;
-		FlowMeter meter;
-		meter.Sample(0.0, { { 1, "Plate" } });   // already on the lane: not counted
-		Check(!meter.Ready(0.0) && meter.PerMin(0.0, "Plate") < 0, "no rate before the window has run");
+		std::unordered_map<uint64_t, NodeView> nodes;
+		int reads = 0;
 
-		// A drone every second for 30 s, each on the lane for two samples.
-		double t = 0.0;
-		for (int i = 1; i <= 30; ++i)
+		void Node(uint64_t id, NodeKind kind) { nodes[id].kind = kind; }
+		// A one-way rail from a to b (both ways when twoWay).
+		void Rail(uint64_t a, uint64_t b, bool twoWay = false)
 		{
-			const uint64_t drone = 100 + static_cast<uint64_t>(i);
-			t = i;
-			meter.Sample(t - 0.5, Lane{ { drone, i % 3 == 0 ? "Acid" : "Plate" } });
-			meter.Sample(t, Lane{ { drone, i % 3 == 0 ? "Acid" : "Plate" } });
+			nodes[a].links.push_back({ b, twoWay, true });
+			nodes[b].links.push_back({ a, true, twoWay });
 		}
-		Check(meter.Ready(t), "ready after 20 s");
-		Check(Near(meter.PerMin(t, "Plate"), 20.0f / 30.0f * 60.0f), "plate: 20 in 30 s, 40 a minute");
-		Check(Near(meter.PerMin(t, "Acid"), 10.0f / 30.0f * 60.0f), "acid: 10 in 30 s, 20 a minute");
-		Check(meter.Items(t) == std::vector<std::string>{ "Plate", "Acid" }, "both items, in the order seen");
+		bool operator()(uint64_t id, NodeView& out)
+		{
+			++reads;
+			auto found = nodes.find(id);
+			if (found == nodes.end())
+				return false;
+			out = found->second;
+			return true;
+		}
+	};
 
-		// An empty lane for two minutes: every pass falls out of the window.
-		meter.Sample(t + 120.0, {});
-		Check(Near(meter.PerMin(t + 120.0, "Plate"), 0.0f) && meter.Items(t + 120.0).empty(), "the window forgets old passes");
+	std::set<uint64_t> Set(const std::vector<uint64_t>& v) { return { v.begin(), v.end() }; }
+
+	// A long line: two makers M1, M2 join at pole 10, then poles 11 to 15 to a
+	// storage S, then pole 16 to consumer C. A branch off pole 11 feeds
+	// consumer B; machine X sends into pole 12 from the side; pole 13 has a
+	// rail back out to consumer Y. The aimed rail runs 14 to 15. One far node
+	// (99) cannot be read, as if it were gone.
+	void TestAttachedLongLine()
+	{
+		const uint64_t M1 = 1, M2 = 2, X = 3, B = 4, C = 5, Y = 6, S = 7;
+		FakeNet net;
+		for (uint64_t m : { M1, M2, X, B, C, Y })
+			net.Node(m, NodeKind::Machine);
+		net.Node(S, NodeKind::Storage);
+		for (uint64_t p = 10; p <= 16; ++p)
+			net.Node(p, NodeKind::PassThrough);
+		net.Rail(M1, 10); net.Rail(M2, 10);
+		net.Rail(10, 11); net.Rail(11, 12); net.Rail(12, 13); net.Rail(13, 14); net.Rail(14, 15);
+		net.Rail(15, S); net.Rail(S, 16); net.Rail(16, C);
+		net.Rail(11, B);
+		net.Rail(X, 12);
+		net.Rail(13, Y);
+		net.Rail(99, 13);
+		net.nodes.erase(99);
+
+		const Attached found = FindAttached({ 14 }, net, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ M1, M2, X }, "every maker up the line, through every segment");
+		Check(Set(found.downstream) == std::set<uint64_t>{ B, C, Y }, "every consumer they feed, branches and past storage");
+		Check(!found.truncated, "a small network is not truncated");
+
+		const Attached capped = FindAttached({ 14 }, net, 4, 256);
+		Check(capped.truncated, "the node cap sets truncated");
+	}
+
+	// A rail straight out of a machine; a two-way rail; a loop.
+	void TestAttachedEdges()
+	{
+		FakeNet net;
+		net.Node(1, NodeKind::Machine);
+		net.Node(2, NodeKind::Machine);
+		net.Node(10, NodeKind::PassThrough);
+		net.Rail(1, 10);
+		net.Rail(10, 2);
+		Attached found = FindAttached({ 1 }, net, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ 1 }, "a rail out of a machine has that machine upstream");
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "...and what it feeds downstream");
+
+		FakeNet two;
+		two.Node(1, NodeKind::Machine);
+		two.Node(2, NodeKind::Machine);
+		two.Node(10, NodeKind::PassThrough);
+		two.Node(11, NodeKind::PassThrough);
+		two.Rail(1, 10);
+		two.Rail(10, 11, true);
+		two.Rail(11, 10);   // a loop back
+		two.Rail(11, 2);
+		found = FindAttached({ 10, 11 }, two, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ 1 }, "a two-way rail walks back from both ends");
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "a loop is walked once");
 	}
 }
 
@@ -514,7 +572,8 @@ int main()
 	TestFlowsOneRowPerItem();
 	TestFlowsLimits();
 	TestEndLines();
-	TestFlowMeter();
+	TestAttachedLongLine();
+	TestAttachedEdges();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");

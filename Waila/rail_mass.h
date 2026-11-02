@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rail_network.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -8,10 +10,10 @@ struct IPluginHookScanner;
 
 namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; class UCrBuildingData; }
 
-// Reads the game's drone logistics from its Mass simulation, which runs for the
-// whole world whether or not a building is loaded: a rail's lane holds the
-// drones on it, each drone names its request, and the request names the
-// building the item comes from and the one it goes to.
+// Reads the game's drone logistics from its Mass simulation, which holds every
+// rail and building of the save whether or not its actor is loaded: a rail
+// names the two nodes it joins, a node lists the rails at its sockets, and a
+// machine's crafting fragment and requests say what it makes and wants.
 //
 // Every member of every Mass fragment and every struct stride comes from the
 // loader by name (ResolveField). Keys are declared as three features: "rail
@@ -44,29 +46,6 @@ namespace Waila::RailMass
 	// The rail's, or a building's, own Mass entity. 0 when it has none yet.
 	Entity EntityOf(SDK::AActor* actor);
 
-	// One source or destination building seen on a drone's request.
-	struct Peer
-	{
-		Entity                 entity = 0;
-		bool                   source = false;   // false: the item goes there
-		SDK::UAuItemDataBase*  item   = nullptr; // valid only in the tick it was read
-		bool                   carried = false;  // the drone has the item; false: still on its way to pick it up
-	};
-
-	// A drone on the lane, or waiting to join it, with an item.
-	struct Carrying
-	{
-		Entity                drone = 0;
-		SDK::UAuItemDataBase* item  = nullptr;   // valid only in the tick it was read
-	};
-
-	struct Observation
-	{
-		bool                  railFound  = false;   // the rail has a lane fragment
-		std::vector<Peer>     peers;
-		std::vector<Carrying> lane;                 // the drones on or joining the lane that carry an item
-	};
-
 	// What a crafter's Mass fragment says. isCrafter is false for storage and
 	// stations, which have no crafting fragment.
 	struct CrafterState
@@ -79,7 +58,14 @@ namespace Waila::RailMass
 
 	// Game thread only. False when the reader is unavailable or a read faulted;
 	// a fault turns the reader off for the rest of the session.
-	bool Observe(Entity rail, Observation& out);
+	//
+	// The two nodes a rail joins, from its spline connection: items go from
+	// start to end, and both ways when twoWay. False when either is unknown.
+	bool ReadEnds(Entity rail, Entity& start, Entity& end, bool& twoWay);
+	// What a node is and the rails at its sockets, each with its far end.
+	bool ReadNode(Entity node, RailNetwork::NodeView& out);
+	// The items a building has an open request for right now.
+	bool ReadWanted(Entity building, std::vector<SDK::UAuItemDataBase*>& out);
 	bool ReadCrafter(Entity building, CrafterState& out);
 
 	// The building a Mass entity is, from its building parameters (the entity

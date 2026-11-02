@@ -569,20 +569,128 @@ namespace Waila::RailNetwork
 		std::vector<bool>                                     m_laneTrack;
 	};
 
+	// ---- The machines attached to a rail ---------------------------------------
+
+	// A node of the rail network as the game's Mass data has it: a rail joins
+	// two nodes, and a node lists the rails at its sockets.
+	enum class NodeKind : uint8_t
+	{
+		PassThrough,   // a pole, support or junction: rails meet there
+		Storage,       // storage or a station: items rest there, nothing is made
+		Machine,       // a producer or consumer: the network ends there
+	};
+
+	// One rail at a node, by the node at its other end.
+	struct NodeLink
+	{
+		uint64_t other = 0;
+		bool     in    = false;   // items come into the node on it
+		bool     out   = false;   // items leave the node on it
+	};
+
+	struct NodeView
+	{
+		NodeKind              kind = NodeKind::PassThrough;
+		std::vector<NodeLink> links;
+	};
+
+	struct Attached
+	{
+		std::vector<uint64_t> upstream;     // machines whose output can reach the rail
+		std::vector<uint64_t> downstream;   // machines the upstream machines can feed
+		bool                  truncated = false;
+	};
+
+	// The machines attached to a rail whose items leave the nodes in `from`
+	// (its start, and its end too when it runs both ways). Upstream walks back
+	// against the flow from those nodes; downstream walks on from every
+	// upstream machine, so it also finds the machines on branches before the
+	// rail. Pass-through nodes and storage are walked through, machines end a
+	// walk. `read(node, NodeView&)` returns false for a node it cannot read.
+	// At most maxNodes nodes are read and maxMachines machines kept each way;
+	// truncated is set when either bites.
+	template <class Read>
+	Attached FindAttached(const std::vector<uint64_t>& from, Read&& read, size_t maxNodes, size_t maxMachines)
+	{
+		Attached out;
+		std::unordered_map<uint64_t, NodeView> views;
+		auto view = [&](uint64_t node) -> const NodeView*
+		{
+			auto found = views.find(node);
+			if (found != views.end())
+				return &found->second;
+			if (views.size() >= maxNodes)
+			{
+				out.truncated = true;
+				return nullptr;
+			}
+			NodeView v;
+			if (!read(node, v))
+				return nullptr;
+			return &views.emplace(node, std::move(v)).first->second;
+		};
+
+		// `seeds` are expanded whatever they are; every node reached after them
+		// that is a machine is kept and not walked past.
+		auto walk = [&](const std::vector<uint64_t>& seeds, bool upstream, std::vector<uint64_t>& machines)
+		{
+			std::unordered_set<uint64_t> seen(seeds.begin(), seeds.end());
+			std::vector<uint64_t> queue;
+			auto expand = [&](const NodeView& v)
+			{
+				for (const NodeLink& link : v.links)
+					if ((upstream ? link.in : link.out) && link.other && seen.insert(link.other).second)
+						queue.push_back(link.other);
+			};
+			for (uint64_t seed : seeds)
+			{
+				const NodeView* v = view(seed);
+				if (!v)
+					continue;
+				if (upstream && v->kind == NodeKind::Machine)
+				{
+					if (std::find(machines.begin(), machines.end(), seed) == machines.end())
+						machines.push_back(seed);
+					continue;
+				}
+				expand(*v);
+			}
+			for (size_t i = 0; i < queue.size(); ++i)
+			{
+				const NodeView* v = view(queue[i]);
+				if (!v)
+					continue;
+				if (v->kind == NodeKind::Machine)
+				{
+					if (machines.size() >= maxMachines)
+					{
+						out.truncated = true;
+						return;
+					}
+					machines.push_back(queue[i]);
+					continue;
+				}
+				expand(*v);
+			}
+		};
+
+		walk(from, true, out.upstream);
+		walk(out.upstream, false, out.downstream);
+		return out;
+	}
+
 	// ---- One row per item -----------------------------------------------------
 
-	// One building's part in an item's flow along a rail, from either way the
-	// plugin finds it: the rail layout (loaded buildings) or the drones seen on
-	// the rail. `building` names the building the same way in both (its Mass
-	// entity), so a building seen both ways counts once.
+	// One machine's part in an item's flow along a rail: a source making it or
+	// a consumer taking it. A machine found twice counts once.
 	struct FlowPart
 	{
 		uint64_t    building  = 0;
 		std::string item;               // the item's unique name
-		bool        source    = false;  // false: it takes the item off the line
-		bool        crafter   = true;   // false: storage, a station, or a crafter handing out what it does not make
-		float       full      = -1.0f;  // a crafter's items a minute running full out; negative when unread
-		float       now       = -1.0f;  // ...and right now, 0 while it is stalled; negative when unread
+		bool        source    = false;  // false: it takes the item
+		float       full      = -1.0f;  // items a minute running full out; negative when unread
+		float       now       = -1.0f;  // right now: a source's output (0 while stalled), a consumer's intake
+		                                // while it has a request open for the item (else 0); negative when unread
 		std::string name;               // the building's name, which the From/To lines group by
 	};
 
@@ -590,31 +698,30 @@ namespace Waila::RailNetwork
 	struct ItemFlow
 	{
 		std::string item;
-		int32_t     sources   = 0;      // distinct buildings it comes from
-		int32_t     consumers = 0;      // distinct buildings taking it
-		float       output    = 0.0f;   // the crafters' output, uncapped; orders the rows
-		float       max       = -1.0f;  // the sources' output, capped by the rail
-		float       min       = -1.0f;  // left with every taking crafter running full out
+		int32_t     sources   = 0;      // distinct machines making it
+		int32_t     consumers = 0;      // distinct machines taking it
+		float       output    = 0.0f;   // the sources' output, uncapped; orders the rows
+		float       max       = -1.0f;  // the sources' output, nobody pulling
+		float       min       = -1.0f;  // left with every consumer running full out
+		float       now       = -1.0f;  // left with the consumers requesting it right now
 	};
 
 	// Sums the parts into one flow per item that has a source, biggest output
 	// first. capacity is what the rail carries in items a minute (negative when
-	// unread, which leaves max unknown).
-	//
-	// Supply is the source crafters' output, capped by the capacity. A source
-	// crafter whose rate is unread makes the whole item unknown. An item that
-	// only comes out of stock (storage, stations, a crafter handing out what it
-	// does not make) is supplied as fast as the rail carries it. Storage and
-	// stations taking the item have no rate, so they count as buildings and
-	// nothing else.
+	// unread, which leaves the figures uncapped). Each figure is floored at 0
+	// and capped by the capacity. A source whose rate is unread leaves the
+	// item's figures unknown; a consumer whose intake or request is unread
+	// leaves min or now unknown.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
 		struct Sum
 		{
 			ItemFlow flow;
-			int32_t  stock = 0;
 			bool     outputKnown = true;
+			bool     fullKnown   = true;
+			bool     nowKnown    = true;
 			float    takeFull = 0.0f;
+			float    takeNow  = 0.0f;
 			std::unordered_set<uint64_t> from, to;
 		};
 
@@ -631,47 +738,50 @@ namespace Waila::RailNetwork
 			}
 			Sum& sum = sums[found->second];
 
-			// The same building seen twice, either way, counts once.
 			if (!(part.source ? sum.from : sum.to).insert(part.building).second)
 				continue;
 
 			if (part.source)
 			{
-				if (!part.crafter)
-					++sum.stock;
-				else if (part.full >= 0.0f)
+				if (part.full >= 0.0f)
 					sum.flow.output += part.full;
 				else
 					sum.outputKnown = false;
+				continue;
 			}
-			else if (part.crafter && part.full >= 0.0f)
+			if (part.full >= 0.0f)
 				sum.takeFull += part.full;
+			else
+				sum.fullKnown = false;
+			if (part.now >= 0.0f)
+				sum.takeNow += part.now;
+			else
+				sum.nowKnown = false;
 		}
 
-		const bool capped = capacity >= 0.0f;
+		auto cap = [capacity](float v)
+		{
+			v = (std::max)(0.0f, v);
+			return capacity >= 0.0f ? (std::min)(v, capacity) : v;
+		};
+
 		std::vector<ItemFlow> flows;
 		for (Sum& sum : sums)
 		{
-			// An item nothing on the rail supplies is not on it.
+			// An item nothing attached makes is not on the card.
 			if (sum.from.empty())
 				continue;
 
 			ItemFlow& flow = sum.flow;
 			flow.sources   = static_cast<int32_t>(sum.from.size());
 			flow.consumers = static_cast<int32_t>(sum.to.size());
-
-			const bool crafted = static_cast<int32_t>(sum.from.size()) > sum.stock;
-			float supply = -1.0f;
-			if (crafted && sum.outputKnown)
-				supply = capped ? (std::min)(flow.output, capacity) : flow.output;
-			else if (!crafted && capped)
-				supply = capacity;
-
-			if (supply >= 0.0f)
+			if (sum.outputKnown)
 			{
-				if (capped)
-					flow.max = supply;
-				flow.min = (std::max)(0.0f, supply - sum.takeFull);
+				flow.max = cap(flow.output);
+				if (sum.fullKnown)
+					flow.min = cap(flow.output - sum.takeFull);
+				if (sum.nowKnown)
+					flow.now = cap(flow.output - sum.takeNow);
 			}
 			flows.push_back(std::move(flow));
 		}
@@ -730,82 +840,4 @@ namespace Waila::RailNetwork
 		return rows;
 	}
 
-	// ---- What crosses the rail --------------------------------------------------
-
-	// Counts the items that cross a rail, from samples of the drones on its
-	// lane: a drone on the lane carrying an item that was not on it at the
-	// sample before is one item of that kind. Drones already on the lane at the
-	// first sample came on before the count started, so they are left out.
-	// Times are seconds on any steady clock. Passes older than the window are
-	// dropped, and at most kMaxPasses are kept.
-	class FlowMeter
-	{
-	public:
-		static constexpr double kWindow    = 60.0;   // the rolling window
-		static constexpr double kReady     = 20.0;   // sampled this long before a rate is given
-		static constexpr size_t kMaxPasses = 2048;
-
-		struct OnLane
-		{
-			uint64_t    drone = 0;
-			std::string item;   // the item's unique name
-		};
-
-		void Sample(double t, const std::vector<OnLane>& lane)
-		{
-			const auto old = std::find_if(m_passes.begin(), m_passes.end(),
-				[&](const std::pair<double, std::string>& p) { return p.first >= t - kWindow; });
-			m_passes.erase(m_passes.begin(), old);
-
-			if (!m_started)
-			{
-				m_started = true;
-				m_start   = t;
-			}
-			else
-			{
-				for (const OnLane& d : lane)
-				{
-					if (std::find(m_last.begin(), m_last.end(), d.drone) != m_last.end())
-						continue;
-					if (m_passes.size() >= kMaxPasses)
-						m_passes.erase(m_passes.begin());
-					m_passes.emplace_back(t, d.item);
-				}
-			}
-
-			m_last.clear();
-			for (const OnLane& d : lane)
-				m_last.push_back(d.drone);
-		}
-
-		bool Ready(double t) const { return m_started && t - m_start >= kReady; }
-
-		// Items of this kind a minute over the window so far; negative until Ready.
-		float PerMin(double t, const std::string& item) const
-		{
-			if (!Ready(t))
-				return -1.0f;
-			const double span = (std::min)(t - m_start, kWindow);
-			const auto n = std::count_if(m_passes.begin(), m_passes.end(), [&](const std::pair<double, std::string>& p)
-				{ return p.first >= t - kWindow && p.second == item; });
-			return static_cast<float>(static_cast<double>(n) / span * 60.0);
-		}
-
-		// The kinds of item that crossed in the window, in the order first seen.
-		std::vector<std::string> Items(double t) const
-		{
-			std::vector<std::string> items;
-			for (const auto& p : m_passes)
-				if (p.first >= t - kWindow && std::find(items.begin(), items.end(), p.second) == items.end())
-					items.push_back(p.second);
-			return items;
-		}
-
-	private:
-		bool                                        m_started = false;
-		double                                      m_start   = 0.0;
-		std::vector<uint64_t>                       m_last;
-		std::vector<std::pair<double, std::string>> m_passes;
-	};
 }

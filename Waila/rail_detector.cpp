@@ -25,23 +25,25 @@ namespace Waila
 {
 	namespace
 	{
-		// Bounds for the source walk. Both stop a runaway walk and set
+		// Bounds for the network walk. Both stop a runaway walk and set
 		// RailInfo::truncated when they bite.
 		constexpr size_t kMaxRails   = 1024;
 		constexpr size_t kMaxSources = 256;
 
-		// Only actors the game has spawned are visible to GetAllActorsOfClass, and
-		// player buildings are streamed in around the camera (INFERRED), so a long
-		// rail can be cut short without `truncated` being set.
-
 		constexpr std::chrono::milliseconds kRefresh{ 1000 };
 
-		// Everything the rail layout found for one rail, kept between refreshes:
-		// each loaded crafter's part in the flow of an item (rail_network.h,
-		// SumFlows), and the items' names. Item data is held as a weak pointer and
+		// Everything the walk found for one rail, kept between refreshes: each
+		// machine's part in the flow of an item (rail_network.h, SumFlows), the
+		// totals, and the items' names. Item data is held as a weak pointer and
 		// resolved on use. `rail` is only ever compared, never dereferenced: a
 		// recycled address could at worst show the previous rail's numbers until
 		// the next refresh.
+		//
+		// The walk is the game's own rail network from its Mass data, loaded or
+		// not (FindAttached, rail_mass.h). Without the Mass reader it falls back
+		// to the loaded rail layout: only actors the game has spawned are visible
+		// to GetAllActorsOfClass, and player buildings are streamed in around the
+		// camera (INFERRED), so that one can cut a long rail short.
 		struct ItemInfo
 		{
 			FWeakObjectPtr item;
@@ -52,8 +54,12 @@ namespace Waila
 		{
 			const AActor*                             rail = nullptr;
 			std::chrono::steady_clock::time_point     stamp{};
+			bool                                      fromMass  = false;
+			bool                                      found     = false;   // the Mass walk could start from the rail
 			bool                                      truncated = false;
+			float                                     capacity  = -1.0f;   // items a minute; negative when unread
 			std::vector<RailNetwork::FlowPart>        parts;
+			std::vector<RailNetwork::ItemFlow>        flows;
 			std::unordered_map<std::string, ItemInfo> items;
 		};
 
@@ -219,13 +225,10 @@ namespace Waila
 			return rails;
 		}
 
-		// A building found through its actor and through the drones counts once in
-		// the sums, so both name it by its Mass entity; without one (the Mass
-		// reader off) the actor's address stands in, only ever compared.
+		// The layout names a crafter by its address, only ever compared.
 		uint64_t BuildingKey(ACrCrafter* crafter)
 		{
-			const RailMass::Entity entity = RailMass::EntityOf(crafter);
-			return entity ? entity : static_cast<uint64_t>(reinterpret_cast<uintptr_t>(crafter));
+			return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(crafter));
 		}
 
 		// Stands in for a building the game's data cannot name: the building names
@@ -240,17 +243,6 @@ namespace Waila
 			if (Fields::ReadBuildingTexts(Fields::BuildingDataOf(crafter), name, desc) && !name.empty())
 				return name;
 			return kUnknownBuilding;
-		}
-
-		// A crafter's rate right now from its full rate: 0 while its Mass data says
-		// it is stalled (missing items or output full). Unread without the Mass
-		// reader or a rate.
-		float NowOf(RailMass::Entity entity, float full)
-		{
-			RailMass::CrafterState state;
-			if (full < 0.0f || !entity || !RailMass::ReadCrafter(entity, state) || !state.isCrafter)
-				return -1.0f;
-			return state.stalled ? 0.0f : full;
 		}
 
 		// What a recipe takes at a crafting speed, by item unique name: count /
@@ -276,23 +268,22 @@ namespace Waila
 			return inputs;
 		}
 
-		// A crafter taking items off the line: one part per ingredient in `inputs`.
-		// `stalled` is negative when unread.
-		void AddTaker(uint64_t key, const std::string& name, const std::vector<Input>& inputs, int stalled,
-		              std::vector<RailNetwork::FlowPart>& parts)
+		void Remember(Cache& out, UAuItemDataBase* item, const std::string& unique)
 		{
-			for (const Input& in : inputs)
-			{
-				RailNetwork::FlowPart taker{ key, in.item, false, true, in.perMin };
-				taker.now  = stalled < 0 ? -1.0f : stalled ? 0.0f : in.perMin;
-				taker.name = name;
-				parts.push_back(std::move(taker));
-			}
+			if (!item || out.items.count(unique))
+				return;
+			ItemInfo info;
+			info.item.ObjectIndex        = item->Index;
+			info.item.ObjectSerialNumber = 0;
+			info.displayName = Fields::DisplayNameOf(item);
+			out.items.emplace(unique, std::move(info));
 		}
 
 		// The crafters the rail layout finds: the ones feeding the stretch, at
 		// their output with every one running, and the ones taking items off the
-		// line ahead of it. A crafter with no recipe has no item to count.
+		// line ahead of it. A crafter with no recipe has no item to count. Their
+		// state is in the Mass data, which this fallback runs without, so no now
+		// figure.
 		void CollectNetwork(const std::vector<ACrCrafter*>& crafters, const RailNetwork::Sources& sources,
 		                    const RailNetwork::Consumers& consumers, Cache& out)
 		{
@@ -306,16 +297,8 @@ namespace Waila
 					continue;
 
 				const std::string unique = Fields::UniqueNameOf(item);
-				if (!out.items.count(unique))
-				{
-					ItemInfo info;
-					info.item.ObjectIndex        = item->Index;
-					info.item.ObjectSerialNumber = 0;
-					info.displayName = Fields::DisplayNameOf(item);
-					out.items.emplace(unique, std::move(info));
-				}
-				RailNetwork::FlowPart part{ BuildingKey(crafter), unique, true, true, readable ? full : -1.0f };
-				part.now  = NowOf(RailMass::EntityOf(crafter), part.full);
+				Remember(out, item, unique);
+				RailNetwork::FlowPart part{ BuildingKey(crafter), unique, true, readable ? full : -1.0f };
 				part.name = NameOf(crafter);
 				out.parts.push_back(std::move(part));
 			}
@@ -326,264 +309,109 @@ namespace Waila
 				CrafterWork work;
 				if (!crafter || !CrafterWorkOf(crafter, work))
 					continue;
-				RailMass::CrafterState state;
-				const RailMass::Entity entity = RailMass::EntityOf(crafter);
-				const int stalled = entity && RailMass::ReadCrafter(entity, state) && state.isCrafter ? state.stalled : -1;
-				AddTaker(BuildingKey(crafter), NameOf(crafter), InputsOf(work.recipe, work.speed), stalled, out.parts);
+				for (const Input& in : InputsOf(work.recipe, work.speed))
+				{
+					RailNetwork::FlowPart taker{ BuildingKey(crafter), in.item, false, in.perMin };
+					taker.name = NameOf(crafter);
+					out.parts.push_back(std::move(taker));
+				}
 			}
 		}
 
 		// ---- From the game's Mass data (rail_mass.h) ---------------------------
 
-		// The most buildings kept per rail: the reader's own cap on one observation.
-		// Lines merge by building name, so this only bounds the work and the counts.
-		constexpr size_t kMaxPeers = 256;
-
-		// One building and one item, seen at an end of the rail's traffic. Kept
-		// while the rail is watched, so a rail whose drones come and go still
-		// lists everything seen on it.
-		struct MassPeer
-		{
-			RailMass::Entity entity = 0;
-			bool             source = false;
-			std::string      itemUnique;
-			std::string      buildingName;   // empty until its building data could be read
-			bool             carried   = false;   // seen on a drone carrying the item, not one on its way to pick it up
-		};
-
-		// A rail being watched: every rail aimed at in the last kWatchFor, by its
-		// Mass entity (index and serial, checked by every read), loaded or not.
-		// Sampled on the game tick, every tick while it is aimed at and every
-		// kSampleEvery after, card up or not: the ends of every drone seen on it
-		// are kept, and the meter counts the items that cross it. A drone counts
-		// from when it waits to join, so one that crosses a short lane between
-		// samples is still seen. Items are held as weak pointers, resolved on use.
-		constexpr std::chrono::milliseconds kSampleEvery{ 200 };
-		constexpr std::chrono::seconds      kAimedNow{ 1 };
-		constexpr std::chrono::seconds      kWatchFor{ 90 };
-		constexpr size_t                    kMaxWatches = 4;
-
-		struct Watch
-		{
-			RailMass::Entity                          rail = 0;
-			std::chrono::steady_clock::time_point     aimed{};
-			std::chrono::steady_clock::time_point     sampled{};
-			std::chrono::steady_clock::time_point     refreshed{};
-			bool                                      truncated = false;   // more buildings than kMaxPeers were seen
-			float                                     capacity  = -1.0f;   // items a minute; negative when unread
-			std::vector<MassPeer>                     peers;
-			std::vector<RailNetwork::FlowPart>        parts;   // each peer's part in the item sums, rebuilt each refresh
-			std::unordered_map<std::string, ItemInfo> items;   // every item seen on its drones
-			RailNetwork::FlowMeter                    meter;
-		};
-
-		std::vector<Watch> g_watches;
-
-		double Seconds(std::chrono::steady_clock::time_point t)
-		{
-			return std::chrono::duration<double>(t.time_since_epoch()).count();
-		}
-
 		// The building's name from its Mass entity's building parameters, which
-		// every entity keeps whether or not its actor is loaded. Empty when the
-		// entity is gone or has no building data to name it.
+		// every entity keeps whether or not its actor is loaded.
 		std::string BuildingNameOf(RailMass::Entity entity)
 		{
 			SDK::UCrBuildingData* data = nullptr;
 			std::string name, desc;
-			if (RailMass::ReadBuilding(entity, data) && Fields::ReadBuildingTexts(data, name, desc))
+			if (RailMass::ReadBuilding(entity, data) && Fields::ReadBuildingTexts(data, name, desc) && !name.empty())
 				return name;
-			return std::string();
+			return kUnknownBuilding;
 		}
 
-		// One peer's part in its item's sums, from its crafting fragment: a
-		// crafter making the item adds its output; a crafter taking it as an
-		// ingredient adds its intake. Storage, stations and a crafter handing out
-		// what it does not make (leftovers) are stock, with no rate.
-		//
-		// A source is only added once a drone has been seen carrying the item from
-		// it: an empty drone on its way to a pickup may be on a stretch before the
-		// pickup, which the item never passes.
-		void RateOf(const MassPeer& peer, std::vector<RailNetwork::FlowPart>& parts)
+		// The machines attached to the rail's network (FindAttached) and each
+		// one's part in the sums: an upstream crafter makes its recipe's item at
+		// its full rate (0 now while stalled); a downstream crafter takes each
+		// ingredient one of them makes, now only while it has a request open
+		// for it. A filtered rail only carries that item. False when the rail's
+		// ends cannot be read.
+		bool CollectAttached(RailMass::Entity rail, const std::string& filterUnique, Cache& out)
 		{
-			if (peer.source && !peer.carried)
-				return;
-
-			const std::string& name = peer.buildingName.empty() ? kUnknownBuilding : peer.buildingName;
-			RailMass::CrafterState crafter;
-			const bool isCrafter = RailMass::ReadCrafter(peer.entity, crafter) && crafter.isCrafter;
-			UAuItemRecipeData* recipe = isCrafter && Features::Crafters.On() ? crafter.recipe : nullptr;
-			const int stalled = isCrafter ? crafter.stalled : -1;
-
-			if (recipe)
-			{
-				UAuItemDataBase* made = recipe->GetItemDataBase();
-				if (peer.source && made && Fields::UniqueNameOf(made) == peer.itemUnique)
-				{
-					float full = -1.0f;
-					if (!RecipeRate(recipe, 0, crafter.speed, full))
-						full = -1.0f;
-					RailNetwork::FlowPart part{ peer.entity, peer.itemUnique, true, true, full };
-					part.now  = full >= 0.0f ? (crafter.stalled ? 0.0f : full) : -1.0f;
-					part.name = name;
-					parts.push_back(std::move(part));
-					return;
-				}
-				if (!peer.source)
-				{
-					std::vector<Input> inputs = InputsOf(recipe, crafter.speed);
-					inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
-						[&](const Input& in) { return in.item != peer.itemUnique; }), inputs.end());
-					if (!inputs.empty())
-					{
-						AddTaker(peer.entity, name, inputs, stalled, parts);
-						return;
-					}
-				}
-			}
-
-			// A crafter whose rate is unread stays a crafter, so its unknown rate
-			// leaves the item's totals unknown rather than wrong.
-			RailNetwork::FlowPart part{ peer.entity, peer.itemUnique, peer.source, isCrafter && !recipe };
-			part.name = name;
-			parts.push_back(std::move(part));
-		}
-
-		void Remember(Watch& w, UAuItemDataBase* item, const std::string& unique)
-		{
-			if (!item || w.items.count(unique))
-				return;
-			ItemInfo info;
-			info.item.ObjectIndex        = item->Index;
-			info.item.ObjectSerialNumber = 0;
-			info.displayName = Fields::DisplayNameOf(item);
-			w.items.emplace(unique, std::move(info));
-		}
-
-		void Merge(Watch& w, const RailMass::Observation& seen)
-		{
-			for (const RailMass::Peer& p : seen.peers)
-			{
-				if (!p.item)
-					continue;
-				const std::string unique = Fields::UniqueNameOf(p.item);
-				const auto same = std::find_if(w.peers.begin(), w.peers.end(), [&](const MassPeer& m)
-					{ return m.entity == p.entity && m.source == p.source && m.itemUnique == unique; });
-				if (same != w.peers.end())
-				{
-					same->carried = same->carried || p.carried;
-					continue;
-				}
-				if (w.peers.size() >= kMaxPeers)
-				{
-					w.truncated = true;
-					continue;
-				}
-
-				Remember(w, p.item, unique);
-				MassPeer peer;
-				peer.entity     = p.entity;
-				peer.source     = p.source;
-				peer.carried    = p.carried;
-				peer.itemUnique = unique;
-				w.peers.push_back(std::move(peer));
-			}
-		}
-
-		// One sample of the rail's lane: its ends, and the items moving on it for
-		// the meter. False when the rail's lane is gone or the reader is off.
-		bool Sample(Watch& w, std::chrono::steady_clock::time_point now)
-		{
-			w.sampled = now;
-			RailMass::Observation seen;
-			if (!RailMass::Observe(w.rail, seen) || !seen.railFound)
+			RailMass::Entity start = 0, end = 0;
+			bool twoWay = false;
+			if (!RailMass::ReadEnds(rail, start, end, twoWay))
 				return false;
+			std::vector<uint64_t> from{ start };
+			if (twoWay)
+				from.push_back(end);
 
-			Merge(w, seen);
+			const RailNetwork::Attached attached = RailNetwork::FindAttached(from,
+				[](uint64_t node, RailNetwork::NodeView& view) { return RailMass::ReadNode(node, view); },
+				kMaxRails, kMaxSources);
+			out.truncated = attached.truncated;
 
-			std::vector<RailNetwork::FlowMeter::OnLane> lane;
-			for (const RailMass::Carrying& c : seen.lane)
+			std::unordered_set<std::string> made;
+			for (const RailMass::Entity machine : attached.upstream)
 			{
-				const std::string unique = Fields::UniqueNameOf(c.item);
-				Remember(w, c.item, unique);
-				lane.push_back({ c.drone, unique });
+				RailMass::CrafterState crafter;
+				if (!RailMass::ReadCrafter(machine, crafter) || !crafter.isCrafter || !crafter.recipe)
+					continue;
+				UAuItemDataBase* item = crafter.recipe->GetItemDataBase();
+				if (!item)
+					continue;
+				const std::string unique = Fields::UniqueNameOf(item);
+				if (!filterUnique.empty() && unique != filterUnique)
+					continue;
+
+				Remember(out, item, unique);
+				made.insert(unique);
+				float full = -1.0f;
+				if (!RecipeRate(crafter.recipe, 0, crafter.speed, full))
+					full = -1.0f;
+				RailNetwork::FlowPart part{ machine, unique, true, full };
+				part.now  = full >= 0.0f ? (crafter.stalled ? 0.0f : full) : -1.0f;
+				part.name = BuildingNameOf(machine);
+				out.parts.push_back(std::move(part));
 			}
-			w.meter.Sample(Seconds(now), lane);
+
+			std::vector<UAuItemDataBase*> wanted;
+			for (const RailMass::Entity machine : attached.downstream)
+			{
+				RailMass::CrafterState crafter;
+				if (!RailMass::ReadCrafter(machine, crafter) || !crafter.isCrafter || !crafter.recipe)
+					continue;
+				std::vector<Input> inputs = InputsOf(crafter.recipe, crafter.speed);
+				inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
+					[&](const Input& in) { return !made.count(in.item); }), inputs.end());
+				if (inputs.empty())
+					continue;
+
+				const bool requestsRead = RailMass::ReadWanted(machine, wanted);
+				const std::string name = BuildingNameOf(machine);
+				for (const Input& in : inputs)
+				{
+					const bool requesting = std::any_of(wanted.begin(), wanted.end(),
+						[&](UAuItemDataBase* w) { return Fields::UniqueNameOf(w) == in.item; });
+					RailNetwork::FlowPart taker{ machine, in.item, false, in.perMin };
+					taker.now  = !requestsRead ? -1.0f : requesting ? in.perMin : 0.0f;
+					taker.name = name;
+					out.parts.push_back(std::move(taker));
+				}
+			}
 			return true;
 		}
 
-		// The rail's capacity, and each peer's name and part in the sums.
-		void Refresh(Watch& w, std::chrono::steady_clock::time_point now)
+		// An item's name and icon.
+		void DescribeItem(const std::string& unique, std::string& display, UAuItemDataBase*& data)
 		{
-			w.refreshed = now;
-			RailMass::ReadCapacity(w.rail, w.capacity);
-
-			w.parts.clear();
-			for (MassPeer& peer : w.peers)
-			{
-				if (peer.buildingName.empty())
-					peer.buildingName = BuildingNameOf(peer.entity);
-				RateOf(peer, w.parts);
-			}
-		}
-
-		// The rail's watch, started when it is first aimed at. Null when the rail
-		// has no Mass entity or its lane cannot be read. started is set when the
-		// watch is new, which also means it was just refreshed.
-		Watch* WatchOf(AActor* rail, std::chrono::steady_clock::time_point now, bool& started)
-		{
-			started = false;
-			const RailMass::Entity entity = RailMass::EntityOf(rail);
-			if (!entity)
-				return nullptr;
-
-			auto found = std::find_if(g_watches.begin(), g_watches.end(), [&](const Watch& w) { return w.rail == entity; });
-			if (found == g_watches.end())
-			{
-				Watch w;
-				w.rail = entity;
-				if (!Sample(w, now))
-					return nullptr;
-				Refresh(w, now);
-				if (g_watches.size() >= kMaxWatches)
-					g_watches.erase(std::min_element(g_watches.begin(), g_watches.end(),
-						[](const Watch& a, const Watch& b) { return a.aimed < b.aimed; }));
-				g_watches.push_back(std::move(w));
-				started = true;
-				found = g_watches.end() - 1;
-			}
-			found->aimed = now;
-			return &*found;
-		}
-
-		// What the card shows, rebuilt when either way of looking refreshes or the
-		// aim moves to another rail: every building's part, from both, and the
-		// totals summed from them. `rail` is only compared.
-		const AActor*                      g_partsRail = nullptr;
-		std::vector<RailNetwork::FlowPart> g_parts;
-		std::vector<RailNetwork::ItemFlow> g_flows;
-
-		// An item's name and icon: from the layout, or else from the drones.
-		void DescribeItem(const std::string& unique, const Watch* w, std::string& display, UAuItemDataBase*& data)
-		{
-			FWeakObjectPtr item{};
 			const auto info = g_cache.items.find(unique);
-			if (info != g_cache.items.end())
-			{
-				display = info->second.displayName;
-				item    = info->second.item;
-			}
-			else if (w)
-			{
-				const auto seen = w->items.find(unique);
-				if (seen != w->items.end())
-				{
-					display = seen->second.displayName;
-					item    = seen->second.item;
-				}
-			}
+			if (info == g_cache.items.end())
+				return;
+			display = info->second.displayName;
 			// A dead item just loses its icon.
-			UObject* obj = item.Get();
+			UObject* obj = info->second.item.Get();
 			if (obj && UKismetSystemLibrary::IsValid(obj) && obj->IsA(UAuItemDataBase::StaticClass()))
 				data = static_cast<UAuItemDataBase*>(obj);
 		}
@@ -595,26 +423,6 @@ namespace Waila
 			return false;
 
 		return actor->IsA(ACrDronePathPointConnection::StaticClass());
-	}
-
-	void RailDetector::Tick()
-	{
-		if (g_watches.empty())
-			return;
-		if (!Features::ShowRailSources())
-		{
-			g_watches.clear();
-			return;
-		}
-
-		const auto now = std::chrono::steady_clock::now();
-		g_watches.erase(std::remove_if(g_watches.begin(), g_watches.end(), [&](Watch& w)
-			{
-				if (now - w.aimed >= kWatchFor)
-					return true;
-				const bool due = now - w.aimed < kAimedNow || now - w.sampled >= kSampleEvery;
-				return due && !Sample(w, now);
-			}), g_watches.end());
 	}
 
 	bool RailDetector::GetRailInfo(AActor* actor, RailInfo& outInfo)
@@ -645,36 +453,29 @@ namespace Waila
 		// pooling an address can come back as a different rail, which shows the old
 		// rail's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
-
-		// The rail's ends and traffic from the Mass data.
-		Watch* watch = nullptr;
-		bool massRefreshed = false;
-		if (Features::ShowRailSources())
+		const bool fromMass = Features::ShowRailSources() && Features::ShowCrafters();
+		if (g_cache.rail != actor || g_cache.fromMass != fromMass || now - g_cache.stamp >= kRefresh)
 		{
-			watch = WatchOf(actor, now, massRefreshed);
-			if (watch && !massRefreshed && now - watch->refreshed >= kRefresh)
+			g_cache = Cache{};
+			g_cache.rail     = actor;
+			g_cache.stamp    = now;
+			g_cache.fromMass = fromMass;
+
+			if (fromMass)
 			{
-				Refresh(*watch, now);
-				massRefreshed = true;
+				const RailMass::Entity entity = RailMass::EntityOf(actor);
+				g_cache.found = entity && CollectAttached(entity, filterUnique, g_cache);
+				if (g_cache.found && Features::ShowRailCapacity())
+					RailMass::ReadCapacity(entity, g_cache.capacity);
 			}
-			outInfo.fromMass = true;
-		}
-
-		bool refreshed = false;
-		if (Features::ShowDroneRails() && (g_cache.rail != actor || now - g_cache.stamp >= kRefresh))
-		{
-			UWorld* world = PluginSdkRuntime::GetWorld();
-			if (world)
+			else if (Features::ShowDroneRails())
 			{
-				g_cache = Cache{};
-				g_cache.rail  = actor;
-				g_cache.stamp = now;
-				refreshed     = true;
-
+				UWorld* world = PluginSdkRuntime::GetWorld();
 				RailNetwork::Scene scene;
-				const std::vector<const AActor*> rails    = GatherRails(world, scene);
-				const std::vector<ACrCrafter*>   crafters = GatherBuildings(world, scene);
-				GatherPathPoints(world, scene);
+				const std::vector<const AActor*> rails    = world ? GatherRails(world, scene) : std::vector<const AActor*>{};
+				const std::vector<ACrCrafter*>   crafters = world ? GatherBuildings(world, scene) : std::vector<ACrCrafter*>{};
+				if (world)
+					GatherPathPoints(world, scene);
 
 				const auto self = std::find(rails.begin(), rails.end(), actor);
 				if (self != rails.end())
@@ -686,60 +487,30 @@ namespace Waila
 					g_cache.truncated = sources.truncated || consumers.truncated;
 					CollectNetwork(crafters, sources, consumers, g_cache);
 				}
+				if (!filterUnique.empty())
+					g_cache.parts.erase(std::remove_if(g_cache.parts.begin(), g_cache.parts.end(),
+						[&](const RailNetwork::FlowPart& p) { return p.item != filterUnique; }), g_cache.parts.end());
 			}
+			g_cache.flows = RailNetwork::SumFlows(g_cache.parts, g_cache.capacity);
 		}
 
-		// Every building's part: the layout's first (its sources carry the queued
-		// output count), then the drones', each building counted once. A filtered
-		// rail only carries that item.
-		if (refreshed || massRefreshed || g_partsRail != actor)
-		{
-			g_partsRail = actor;
-			g_parts.clear();
-			if (Features::ShowDroneRails() && g_cache.rail == actor)
-				g_parts = g_cache.parts;
-			if (watch)
-				g_parts.insert(g_parts.end(), watch->parts.begin(), watch->parts.end());
-			if (!filterUnique.empty())
-				g_parts.erase(std::remove_if(g_parts.begin(), g_parts.end(),
-					[&](const RailNetwork::FlowPart& p) { return p.item != filterUnique; }), g_parts.end());
-
-			const float capacity = watch && Features::ShowRailCapacity() ? watch->capacity : -1.0f;
-			g_flows = RailNetwork::SumFlows(g_parts, capacity);
-		}
-
-		// One row per item: the totals, with now measured by the watch. An item
-		// seen crossing the rail with no source found still gets its row.
-		const double t = Seconds(now);
-		const bool measuring = watch && !watch->meter.Ready(t);
+		// One row per item, then the From/To lines from the same parts.
 		std::unordered_set<std::string> shown;
-		auto addRow = [&](const std::string& unique, float max, float min)
+		for (const RailNetwork::ItemFlow& flow : g_cache.flows)
 		{
 			RailRateEntry entry;
-			entry.perMinMax = max;
-			entry.perMinMin = min;
-			entry.perMinNow = watch ? watch->meter.PerMin(t, unique) : -1.0f;
-			entry.measuring = measuring;
-			DescribeItem(unique, watch, entry.displayName, entry.itemData);
+			entry.perMinMax = flow.max;
+			entry.perMinMin = flow.min;
+			entry.perMinNow = flow.now;
+			DescribeItem(flow.item, entry.displayName, entry.itemData);
 			outInfo.rates.push_back(std::move(entry));
-			shown.insert(unique);
-		};
-		for (const RailNetwork::ItemFlow& flow : g_flows)
-		{
 			outInfo.sourceCount += flow.sources;
-			addRow(flow.item, flow.max, flow.min);
+			shown.insert(flow.item);
 		}
-		if (watch)
-			for (const std::string& unique : watch->meter.Items(t))
-				if (!shown.count(unique) && (filterUnique.empty() || unique == filterUnique))
-					addRow(unique, -1.0f, -1.0f);
-		outInfo.measuring = measuring;
-		outInfo.truncated = g_cache.rail == actor && g_cache.truncated;
+		outInfo.truncated = g_cache.truncated;
+		outInfo.fromMass  = fromMass;
 
-		// The From/To lines, from the same parts as the totals.
-		if (watch)
-			outInfo.peersTruncated = watch->truncated;
-		for (const RailNetwork::EndRow& end : RailNetwork::GroupEnds(g_parts, shown))
+		for (const RailNetwork::EndRow& end : RailNetwork::GroupEnds(g_cache.parts, shown))
 		{
 			RailPeerEntry entry;
 			entry.source       = end.source;
@@ -747,13 +518,13 @@ namespace Waila
 			entry.count        = end.count;
 			entry.perMinFull   = end.full;
 			entry.perMinNow    = end.now;
-			DescribeItem(end.item, watch, entry.itemName, entry.itemData);
+			DescribeItem(end.item, entry.itemName, entry.itemData);
 			(end.source ? outInfo.fromCount : outInfo.destCount) += end.count;
 			outInfo.peers.push_back(std::move(entry));
 		}
 
-		if (outInfo.rates.empty() && outInfo.peers.empty() && outInfo.fromMass)
-			outInfo.note = !watch ? "Rail data not available" : measuring ? "Measuring..." : "No cargo moving";
+		if (outInfo.rates.empty() && outInfo.peers.empty() && fromMass)
+			outInfo.note = g_cache.found ? "No machines attached" : "Rail data not available";
 
 		return true;
 	}
@@ -761,9 +532,5 @@ namespace Waila
 	void RailDetector::Reset()
 	{
 		g_cache = Cache{};
-		g_watches.clear();
-		g_partsRail = nullptr;
-		g_parts.clear();
-		g_flows.clear();
 	}
 }
