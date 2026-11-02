@@ -331,11 +331,12 @@ namespace Waila::UI
 
 	namespace
 	{
-		// Where the rail's items come from, then where they go, under the item
-		// rates, in the rows left. A crafter shows what it makes or takes running
-		// full out under max and right now under now, summed over the line; storage
-		// and stations have no rate, and min is the rail's, so those stay blank.
-		// Returns the rows left out.
+		// The machines making the rail's items, then the ones taking them, under
+		// the item rates, in the rows left. Each shows what it makes or takes
+		// running full out under max and right now under now, summed over the
+		// line: a maker 0 while stalled (red), a consumer 0 while it is not
+		// asking for the item. min is the rail's, so it stays blank. Returns the
+		// rows left out.
 		size_t AddRailPeers(const Waila::RailInfo& info, CardModel& out)
 		{
 			size_t shown = 0;
@@ -354,7 +355,7 @@ namespace Waila::UI
 				if (p.perMinNow >= 0.0f)
 				{
 					row.now = PerMin(p.perMinNow);
-					if (p.perMinNow <= 0.0f)
+					if (p.source && p.perMinNow <= 0.0f)
 						row.tone = Health::Bad;
 				}
 				out.rates.push_back(std::move(row));
@@ -379,12 +380,8 @@ namespace Waila::UI
 			row.icon = Icons::ForItem(r.itemData);
 			row.name = r.displayName;
 			row.min  = PerMin(r.perMinMin);
-			row.now  = r.measuring ? "..." : PerMin(r.perMinNow);
+			row.now  = PerMin(r.perMinNow);
 			row.max  = PerMin(r.perMinMax);
-
-			// Red when none crossed the rail over the last minute.
-			if (!r.measuring && r.perMinNow == 0.0f)
-				row.tone = Health::Bad;
 			out.rates.push_back(std::move(row));
 		}
 		size_t more = info.rates.size() > kMaxRateRows ? info.rates.size() - kMaxRateRows : 0;
@@ -397,7 +394,7 @@ namespace Waila::UI
 		char buf[48];
 		if (!info.peers.empty())
 		{
-			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.peersTruncated ? "+" : "");
+			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.truncated ? "+" : "");
 			out.statusText = buf;
 		}
 		else if (info.sourceCount > 0)
@@ -410,11 +407,9 @@ namespace Waila::UI
 		out.footLeft = "items / min: min, now, max";
 		if (more > 0)
 		{
-			snprintf(buf, sizeof(buf), "%s+%d more", info.measuring ? "measuring, " : "", static_cast<int>(more));
+			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
 			out.footRight = buf;
 		}
-		else if (info.measuring)
-			out.footRight = "measuring...";
 	}
 
 	// -------------------------------------------------------------------------

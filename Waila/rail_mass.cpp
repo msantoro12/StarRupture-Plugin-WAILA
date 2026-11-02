@@ -101,17 +101,12 @@ namespace Waila::RailMass
 
 		SizeRow kHandleSize      = RAIL_SIZE_ROW("FMassEntityHandle");
 		SizeRow kPersistentSize  = RAIL_SIZE_ROW("FCrMassPersistentEntityID");
-		SizeRow kHelperSize      = RAIL_SIZE_ROW("FCrMassEntityReplicationHelper");
-		SizeRow kLineStateSize   = RAIL_SIZE_ROW("FCrLogisticsLineSimulationState");
-		SizeRow kLineItemSize    = RAIL_SIZE_ROW("FCrLogisticsLineItem");
-		SizeRow kWaitingSize     = RAIL_SIZE_ROW("FCrLogisticsLineWaitingItem");
 		SizeRow kSimpleItemSize  = RAIL_SIZE_ROW("FAuSimpleItem");
 		SizeRow kRequestSize     = RAIL_SIZE_ROW("FCrLogisticsRequestData");
-		SizeRow kRuntimeSize     = RAIL_SIZE_ROW("FCrLogisticsRequestRuntimeData");
+		SizeRow kSocketSize      = RAIL_SIZE_ROW("FCrLogisticsSocketRuntimeData");
 
 		SizeRow* const kSizeRows[] = {
-			&kHandleSize, &kPersistentSize, &kHelperSize, &kLineStateSize, &kLineItemSize,
-			&kWaitingSize, &kSimpleItemSize, &kRequestSize, &kRuntimeSize,
+			&kHandleSize, &kPersistentSize, &kSimpleItemSize, &kRequestSize, &kSocketSize,
 		};
 
 		// A member: its size is a size row's, or fixed for a pointer, float,
@@ -130,31 +125,29 @@ namespace Waila::RailMass
 		constexpr uint32_t kArray  = sizeof(TArray<uint8_t>);
 		constexpr uint32_t kFloat  = sizeof(float);
 		constexpr uint32_t kBool   = sizeof(bool);
+		constexpr uint32_t kByte   = sizeof(uint8_t);
 
 		// An actor's Mass component, and the entity the component made.
 		Member mMassComponent  = RAIL_MEMBER(ACrBuildingActorBase, MassActorComponent, nullptr, kPtr);
 		Member mEntityHandle   = RAIL_MEMBER(UCrMassActorComponent, EntityHandle, &kHandleSize, 0);
 
-		// A rail's lane: the drones on it.
-		Member mLineState      = RAIL_MEMBER(FCrLogisticsLineFragment, State, &kLineStateSize, 0);
-		Member mOrderedItems   = RAIL_MEMBER(FCrLogisticsLineSimulationState, OrderedItems, nullptr, kArray);
-		Member mWaitingItems   = RAIL_MEMBER(FCrLogisticsLineSimulationState, WaitingItems, nullptr, kArray);
-		Member mLineItemEntity = RAIL_MEMBER(FCrLogisticsLineItem, Entity, &kHelperSize, 0);
-		Member mWaitingEntity  = RAIL_MEMBER(FCrLogisticsLineWaitingItem, Entity, &kHelperSize, 0);
+		// A rail's two end nodes, and the rails at a node's sockets. Every rail
+		// names the nodes it joins (SaveGame data); the game fills a node's
+		// sockets with the rails at them when it sets each rail up at load.
+		Member mStartEntity    = RAIL_MEMBER(FAuSplineConnectionFragment, StartEntity, &kPersistentSize, 0);
+		Member mEndEntity      = RAIL_MEMBER(FAuSplineConnectionFragment, EndEntity, &kPersistentSize, 0);
+		Member mOneWay         = RAIL_MEMBER(FCrLogisticsLineParameters, bOneWay, nullptr, kBool);
+		Member mSockets        = RAIL_MEMBER(FCrLogisticsSocketsFragment, Sockets, nullptr, kArray);
+		Member mSocketType     = RAIL_MEMBER(FCrLogisticsSocketRuntimeData, ConnectionType, nullptr, kByte);
+		Member mSocketRail     = RAIL_MEMBER(FCrLogisticsSocketRuntimeData, ConnectionEntity, &kHandleSize, 0);
+		Member mLogisticsType  = RAIL_MEMBER(FCrLogisticsParameters, LogisticsType, nullptr, kByte);
 
-		// A drone: its request and what it carries.
-		Member mRequestUId     = RAIL_MEMBER(FCrLogisticsAgentFragment, RequestUId, &kPersistentSize, 0);
-		Member mCarriedItem    = RAIL_MEMBER(FCrLogisticsAgentFragment, CarriedItem, &kSimpleItemSize, 0);
-		Member mItemData       = RAIL_MEMBER(FAuSimpleItem, ItemDataBase, nullptr, kPtr);
-
-		// A request: what it wants, and for each drone on it the source and
-		// destination building.
+		// A building's open requests, and the item each one wants.
+		Member mRequests       = RAIL_MEMBER(FCrLogisticsRequestContainerFragment, Requests, nullptr, kArray);
+		Member mPending        = RAIL_MEMBER(FCrLogisticsRequestContainerFragment, PendingRequests, nullptr, kArray);
 		Member mRequestData    = RAIL_MEMBER(FCrLogisticsRequestFragment, Data, &kRequestSize, 0);
 		Member mWantedItem     = RAIL_MEMBER(FCrLogisticsRequestData, WantedItem, &kSimpleItemSize, 0);
-		Member mRuntimeData    = RAIL_MEMBER(FCrLogisticsRequestData, RuntimeData, nullptr, kArray);
-		Member mRuntimeAgent   = RAIL_MEMBER(FCrLogisticsRequestRuntimeData, AgentEntity, &kPersistentSize, 0);
-		Member mItemSource     = RAIL_MEMBER(FCrLogisticsRequestRuntimeData, ItemSource, &kPersistentSize, 0);
-		Member mItemDest       = RAIL_MEMBER(FCrLogisticsRequestRuntimeData, ItemDestination, &kPersistentSize, 0);
+		Member mItemData       = RAIL_MEMBER(FAuSimpleItem, ItemDataBase, nullptr, kPtr);
 
 		// A crafter's recipe and state.
 		Member mSelectedRecipe = RAIL_MEMBER(FCrCraftingFragment, SelectedRecipe, nullptr, kPtr);
@@ -170,10 +163,9 @@ namespace Waila::RailMass
 		Member mPlacement      = RAIL_MEMBER(FCrBuildingParameters, PlacementData, nullptr, kPtr);
 
 		Member* const kMembers[] = {
-			&mMassComponent, &mEntityHandle, &mLineState, &mOrderedItems, &mWaitingItems,
-			&mLineItemEntity, &mWaitingEntity, &mRequestUId, &mCarriedItem, &mItemData, &mRequestData,
-			&mWantedItem, &mRuntimeData, &mRuntimeAgent, &mItemSource, &mItemDest, &mSelectedRecipe,
-			&mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
+			&mMassComponent, &mEntityHandle, &mStartEntity, &mEndEntity, &mOneWay, &mSockets, &mSocketType,
+			&mSocketRail, &mLogisticsType, &mRequests, &mPending, &mRequestData, &mWantedItem, &mItemData,
+			&mSelectedRecipe, &mCurrentRecipe, &mCraftingSpeed, &mMissingItems, &mOutputFull,
 		};
 
 		// The rail capacity read, a feature of its own: a lane's speed and
@@ -189,12 +181,15 @@ namespace Waila::RailMass
 		Member* const kCapacityMembers[] = { &mLineMoveSpeed, &mLineSlotLength, &mIsStartLine, &mHalfSlotLength };
 
 		// The fragments' reflection objects, found by name on first use.
-		const UScriptStruct* g_lineStruct     = nullptr;
-		const UScriptStruct* g_paramsStruct   = nullptr;
-		const UScriptStruct* g_agentStruct    = nullptr;
-		const UScriptStruct* g_requestStruct  = nullptr;
-		const UScriptStruct* g_craftingStruct = nullptr;
+		const UScriptStruct* g_lineStruct      = nullptr;
+		const UScriptStruct* g_paramsStruct    = nullptr;
+		const UScriptStruct* g_requestStruct   = nullptr;
+		const UScriptStruct* g_craftingStruct  = nullptr;
 		const UScriptStruct* g_buildingStruct  = nullptr;
+		const UScriptStruct* g_splineStruct    = nullptr;
+		const UScriptStruct* g_socketsStruct   = nullptr;
+		const UScriptStruct* g_logisticsStruct = nullptr;
+		const UScriptStruct* g_containerStruct = nullptr;
 
 		PluginMap::Feature g_feature{ "rail-sources", "Where a drone rail's items come from and go to", {}, {} };
 		PluginMap::Feature g_capacityFeature{ "rail-capacity", "How many items a minute a drone rail carries", {}, {} };
@@ -206,9 +201,9 @@ namespace Waila::RailMass
 		bool g_capacityFaulted  = false;
 		bool g_buildingFaulted  = false;
 
-		// Bounds on what one rail can hold, so a corrupt count cannot run away.
+		// Bounds on what one array can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
-		constexpr size_t  kMaxPeers  = 256;
+		constexpr size_t  kMaxWanted = 64;
 
 		bool ResolveSize(IPluginHookScanner* scanner, const IPluginSelf* self, SizeRow& row)
 		{
@@ -281,15 +276,6 @@ namespace Waila::RailMass
 			return UObject::FindObjectFast<UScriptStruct>(name);
 		}
 
-		bool FindStructs()
-		{
-			if (!g_lineStruct)     g_lineStruct     = FindStruct("CrLogisticsLineFragment");
-			if (!g_agentStruct)    g_agentStruct    = FindStruct("CrLogisticsAgentFragment");
-			if (!g_requestStruct)  g_requestStruct  = FindStruct("CrLogisticsRequestFragment");
-			if (!g_craftingStruct) g_craftingStruct = FindStruct("CrCraftingFragment");
-			return g_lineStruct && g_agentStruct && g_requestStruct && g_craftingStruct;
-		}
-
 		const UScriptStruct* Found(const UScriptStruct*& cache, const char* name)
 		{
 			if (!cache)
@@ -322,83 +308,91 @@ namespace Waila::RailMass
 			return item && UKismetSystemLibrary::IsValid(item) ? item : nullptr;
 		}
 
-		void AddDrones(const uint8_t* state, int32_t arrayOffset, uint32_t stride, int32_t entityOffset,
-			const UWorld* world, std::vector<Entity>& drones)
+		// LogisticsType values (ECrMassLogisticsType) the walk tells apart.
+		constexpr uint8_t kTypeStorage        = 1;
+		constexpr uint8_t kTypeLineNode       = 5;
+		constexpr uint8_t kTypeLineConnection = 6;
+
+		const uint8_t* SharedFragment(const void* manager, Entity entity, const UScriptStruct* type);
+
+		void ReadEndsImpl(const void* manager, const UWorld* world, Entity rail, Entity& start, Entity& end, bool& twoWay)
 		{
-			const RawArray items = ArrayAt(state, arrayOffset);
-			for (int32_t i = 0; i < items.num; ++i)
+			const uint8_t* spline = Fragment(manager, rail, Found(g_splineStruct, "AuSplineConnectionFragment"));
+			if (!spline)
+				return;
+			start = HandleOf(spline + mStartEntity.Offset(), world);
+			end   = HandleOf(spline + mEndEntity.Offset(), world);
+			const uint8_t* params = SharedFragment(manager, rail, Found(g_paramsStruct, "CrLogisticsLineParameters"));
+			twoWay = params && !ReadAt<bool>(params, mOneWay.Offset());
+		}
+
+		// The rails at the node's sockets. Which way each runs comes from the
+		// rail's own ends, whatever the socket's type says.
+		void ReadNodeImpl(Entity node, RailNetwork::NodeView& out, bool& found)
+		{
+			const UWorld* world = PluginSdkRuntime::GetWorld();
+			const void* manager = Manager(world);
+			const uint8_t* logistics = manager ? SharedFragment(manager, node, Found(g_logisticsStruct, "CrLogisticsParameters")) : nullptr;
+			if (!logistics)
+				return;
+			found = true;
+			const uint8_t type = ReadAt<uint8_t>(logistics, mLogisticsType.Offset());
+			using RailNetwork::NodeKind;
+			out.kind = type == kTypeLineNode || type == kTypeLineConnection ? NodeKind::PassThrough
+			         : type == kTypeStorage ? NodeKind::Storage : NodeKind::Machine;
+
+			const uint8_t* sockets = Fragment(manager, node, Found(g_socketsStruct, "CrLogisticsSocketsFragment"));
+			if (!sockets)
+				return;
+			const RawArray list = ArrayAt(sockets, mSockets.Offset());
+			for (int32_t i = 0; i < list.num; ++i)
 			{
-				const uint8_t* element = items.data + static_cast<size_t>(i) * stride;
-				const Entity drone = HandleOf(element + entityOffset + Fields::HelperEntity.offset, world);
-				if (drone && drones.size() < kMaxPeers)
-					drones.push_back(drone);
+				const uint8_t* socket = list.data + static_cast<size_t>(i) * kSocketSize.size;
+				const Entity rail = ReadAt<Entity>(socket, mSocketRail.Offset());
+				if (!rail || ReadAt<uint8_t>(socket, mSocketType.Offset()) == 0)
+					continue;
+				Entity start = 0, end = 0;
+				bool twoWay = false;
+				ReadEndsImpl(manager, world, rail, start, end, twoWay);
+				RailNetwork::NodeLink link;
+				link.other = start == node ? end : end == node ? start : 0;
+				link.in    = end == node || (twoWay && start == node);
+				link.out   = start == node || (twoWay && end == node);
+				if (link.other && link.other != node)
+					out.links.push_back(link);
 			}
 		}
 
-		void ObserveImpl(Entity rail, Observation& out)
+		// Pending requests hold their data in place; the others are entities
+		// of their own.
+		void ReadWantedImpl(Entity building, std::vector<UAuItemDataBase*>& out)
 		{
-			if (!FindStructs())
-				return;
 			const UWorld* world = PluginSdkRuntime::GetWorld();
 			const void* manager = Manager(world);
-			const uint8_t* line = manager ? Fragment(manager, rail, g_lineStruct) : nullptr;
-			if (!line)
+			const uint8_t* container = manager ? Fragment(manager, building, Found(g_containerStruct, "CrLogisticsRequestContainerFragment")) : nullptr;
+			if (!container)
 				return;
-			out.railFound = true;
 
-			// The drones moving on the lane, then the ones waiting to join it.
-			std::vector<Entity> drones;
-			const uint8_t* state = line + mLineState.Offset();
-			AddDrones(state, mOrderedItems.Offset(), kLineItemSize.size, mLineItemEntity.Offset(), world, drones);
-			AddDrones(state, mWaitingItems.Offset(), kWaitingSize.size, mWaitingEntity.Offset(), world, drones);
+			const RawArray pending = ArrayAt(container, mPending.Offset());
+			for (int32_t i = 0; i < pending.num && out.size() < kMaxWanted; ++i)
+				if (UAuItemDataBase* item = ItemOf(pending.data + static_cast<size_t>(i) * kRequestSize.size + mWantedItem.Offset()))
+					out.push_back(item);
 
-			for (size_t d = 0; d < drones.size(); ++d)
+			const UScriptStruct* requestType = Found(g_requestStruct, "CrLogisticsRequestFragment");
+			const RawArray requests = ArrayAt(container, mRequests.Offset());
+			for (int32_t i = 0; i < requests.num && out.size() < kMaxWanted; ++i)
 			{
-				const Entity drone = drones[d];
-				const uint8_t* agent = Fragment(manager, drone, g_agentStruct);
-				if (!agent)
-					continue;
-
-				// What the drone carries.
-				UAuItemDataBase* item = ItemOf(agent + mCarriedItem.Offset());
-				const bool carried = item != nullptr;
-				if (carried)
-					out.lane.push_back(Carrying{ drone, item });
-
-				const Entity requestEntity = HandleOf(agent + mRequestUId.Offset(), world);
-				const uint8_t* request = Fragment(manager, requestEntity, g_requestStruct);
-				if (!request)
-					continue;
-				const uint8_t* data = request + mRequestData.Offset();
-
-				// When it is still on its way to pick up, what the request wants.
-				if (!item)
-					item = ItemOf(data + mWantedItem.Offset());
-
-				const RawArray runtime = ArrayAt(data, mRuntimeData.Offset());
-				for (int32_t i = 0; i < runtime.num; ++i)
-				{
-					const uint8_t* entry = runtime.data + static_cast<size_t>(i) * kRuntimeSize.size;
-					// A request can serve several drones; the entry that names this
-					// one is its own. A request with a single entry is this drone's.
-					if (runtime.num > 1 && HandleOf(entry + mRuntimeAgent.Offset(), world) != drone)
-						continue;
-					const Entity source = HandleOf(entry + mItemSource.Offset(), world);
-					const Entity dest   = HandleOf(entry + mItemDest.Offset(), world);
-					if (source && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ source, true, item, carried });
-					if (dest && out.peers.size() < kMaxPeers)
-						out.peers.push_back(Peer{ dest, false, item, carried });
-				}
+				const Entity entity = HandleOf(requests.data + static_cast<size_t>(i) * kPersistentSize.size, world);
+				const uint8_t* request = Fragment(manager, entity, requestType);
+				if (UAuItemDataBase* item = request ? ItemOf(request + mRequestData.Offset() + mWantedItem.Offset()) : nullptr)
+					out.push_back(item);
 			}
 		}
 
 		void ReadCrafterImpl(Entity building, CrafterState& out)
 		{
-			if (!FindStructs())
-				return;
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
-			const uint8_t* fragment = manager ? Fragment(manager, building, g_craftingStruct) : nullptr;
+			const uint8_t* fragment = manager ? Fragment(manager, building, Found(g_craftingStruct, "CrCraftingFragment")) : nullptr;
 			if (!fragment)
 				return;
 
@@ -442,7 +436,7 @@ namespace Waila::RailMass
 		// (UpdateRequests clamps the carried count to 1), whatever the item.
 		void ReadCapacityImpl(Entity rail, float& perMin)
 		{
-			if (!FindStructs() || !Found(g_paramsStruct, "CrLogisticsLineParameters"))
+			if (!Found(g_lineStruct, "CrLogisticsLineFragment") || !Found(g_paramsStruct, "CrLogisticsLineParameters"))
 				return;
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* line   = manager ? Fragment(manager, rail, g_lineStruct) : nullptr;
@@ -521,13 +515,13 @@ namespace Waila::RailMass
 			core.push_back(row->key);
 		for (const Member* member : kMembers)
 			core.push_back(member->spec.key);
-		core.push_back(Fields::HelperEntity.key);
 		core.push_back(PluginMap::MassEntityManagerField.key);
 		core.push_back(kKeyGetSubsystem);
 		core.push_back(kKeyGetFragment);
 		core.push_back(kKeyIsValid);
 		core.push_back(kKeyIsBuilt);
 		core.push_back(kKeyGetHandle);
+		core.push_back(kKeyGetShared);
 
 		g_feature.keys = core;
 		g_feature.keys.insert(g_feature.keys.end(), alsoNeeds.begin(), alsoNeeds.end());
@@ -536,12 +530,9 @@ namespace Waila::RailMass
 		for (const Member* member : kCapacityMembers)
 			g_capacityFeature.keys.push_back(member->spec.key);
 
-		g_capacityFeature.keys.push_back(kKeyGetShared);
-
 		g_buildingFeature.keys = core;
 		for (const Member* member : kBuildingMembers)
 			g_buildingFeature.keys.push_back(member->spec.key);
-		g_buildingFeature.keys.push_back(kKeyGetShared);
 
 		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_buildingFeature);
 	}
@@ -593,9 +584,9 @@ namespace Waila::RailMass
 		g_getHandle    = reinterpret_cast<GetHandleFn>(getHandle);
 		g_getShared    = reinterpret_cast<GetSharedFn>(getShared);
 
-		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle;
-		g_capacityResolved = capacity && getShared;
-		g_buildingResolved = building && getShared;
+		g_resolved         = all && getSubsystem && getFragment && isValid && isBuilt && getHandle && getShared;
+		g_capacityResolved = capacity;
+		g_buildingResolved = building;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
 		else if (!g_capacityResolved || !g_capacityFeature.On())
@@ -607,18 +598,17 @@ namespace Waila::RailMass
 	bool Available()
 	{
 		return g_resolved && g_feature.On() && !g_faulted
-			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle
-			&& Fields::HelperEntity.offset >= 0;
+			&& g_getSubsystem && g_getFragment && g_isValid && g_isBuilt && g_getHandle && g_getShared;
 	}
 
 	bool CapacityAvailable()
 	{
-		return Available() && !g_capacityFaulted && g_capacityResolved && g_capacityFeature.On() && g_getShared;
+		return Available() && !g_capacityFaulted && g_capacityResolved && g_capacityFeature.On();
 	}
 
 	bool BuildingAvailable()
 	{
-		return Available() && !g_buildingFaulted && g_buildingResolved && g_buildingFeature.On() && g_getShared;
+		return Available() && !g_buildingFaulted && g_buildingResolved && g_buildingFeature.On();
 	}
 
 	Entity EntityOf(AActor* actor)
@@ -632,11 +622,35 @@ namespace Waila::RailMass
 		return ToHandle(e).index > 0 ? e : 0;
 	}
 
-	bool Observe(Entity rail, Observation& out)
+	bool ReadEnds(Entity rail, Entity& start, Entity& end, bool& twoWay)
 	{
+		start = end = 0;
+		twoWay = false;
 		if (!Available())
 			return false;
-		return Guarded([&] { ObserveImpl(rail, out); });
+		return Guarded([&]
+			{
+				const UWorld* world = PluginSdkRuntime::GetWorld();
+				if (const void* manager = Manager(world))
+					ReadEndsImpl(manager, world, rail, start, end, twoWay);
+			}) && start && end;
+	}
+
+	bool ReadNode(Entity node, RailNetwork::NodeView& out)
+	{
+		out = RailNetwork::NodeView{};
+		if (!Available())
+			return false;
+		bool found = false;
+		return Guarded([&] { ReadNodeImpl(node, out, found); }) && found;
+	}
+
+	bool ReadWanted(Entity building, std::vector<UAuItemDataBase*>& out)
+	{
+		out.clear();
+		if (!Available())
+			return false;
+		return Guarded([&] { ReadWantedImpl(building, out); });
 	}
 
 	bool ReadCrafter(Entity building, CrafterState& out)

@@ -339,9 +339,6 @@ namespace Waila::UI
 			}
 		}
 
-		// Sample the rails aimed at lately, the one under the cursor included.
-		Waila::RailDetector::Tick();
-
 		// Retry any icons the GPU wasn't ready for on an earlier frame.
 		Waila::UI::Icons::Tick();
 
