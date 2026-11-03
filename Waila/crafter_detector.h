@@ -21,6 +21,7 @@ namespace Waila
 		int32_t               need = 0;
 		int32_t               have = -1;   // -1 when the input store could not be read
 		float                 perMin = -1.0f;   // items taken a minute at the crafter's speed; -1 when unknown
+			float                 arrivalPerMin = -1.0f;   // items a minute seen arriving in the input store lately; -1 until measured
 
 		bool IsValid() const { return itemClass != nullptr || itemData != nullptr; }
 	};
@@ -44,6 +45,7 @@ namespace Waila
 		int32_t craftingMultiplier = 1;      // FCrCraftingFragment::CraftingMultiplier
 		bool    bMissingItems = false;       // FCrCraftingFragment::bIsMissingItems
 		bool    bOutputFull   = false;       // FCrCraftingFragment::bOutputFull
+		bool    bNoPower      = false;       // the building reports ECrBuildingState::NoElectricity
 
 		// Recipe inputs and output, in the order the recipe declares them.
 		// Empty while the crafter is idle.

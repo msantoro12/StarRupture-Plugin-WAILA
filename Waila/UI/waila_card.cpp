@@ -80,9 +80,10 @@ namespace Waila::UI
 
 		constexpr size_t kInCols = 2;
 
-		// Each line above an input tile: items per minute now and at full speed,
-		// then, for a starved machine, what the tile is short by.
-		constexpr float kInRateH = 14.0f;
+		// The line above an input tile (what it needs a minute) and the one under
+		// it (what it is short by).
+		constexpr float kInRateH  = 14.0f;
+		constexpr float kInShortH = 14.0f;
 
 		// Measure() runs on the game thread, where there is no ImGui context and so
 		// no way to ask what a string is worth in pixels. Widths that decide the
@@ -97,19 +98,20 @@ namespace Waila::UI
 			return static_cast<float>(s.size()) * font * perChar;
 		}
 
-		// Lines of text above the input tiles: none, the rate, or the rate and
-		// the shortage.
-		int InputRateLines(const CardModel& m)
+		bool AnyInputRate(const CardModel& m)
 		{
-			int lines = 0;
 			for (const auto& in : m.inputs)
-			{
-				if (!in.shortage.empty())
-					return 2;
 				if (!in.rate.empty())
-					lines = 1;
-			}
-			return lines;
+					return true;
+			return false;
+		}
+
+		bool AnyInputShort(const CardModel& m)
+		{
+			for (const auto& in : m.inputs)
+				if (!in.shortage.empty())
+					return true;
+			return false;
 		}
 
 		// A tile's cell is as wide as the wider of the tile and its figures, so
@@ -137,9 +139,10 @@ namespace Waila::UI
 		{
 			float tile;     // input tile edge
 			float cellW;    // width of one input cell: the tile, or its figures if wider
-			float rateH;    // height of the figures above each tile
+			float rateH;    // height of the figure above each tile
 			float gridW;    // width the cells actually occupy
 			float slotW;    // width the grid reserves: gridW, but never under kInGridW
+			float shortH;   // height of the shortage line under each tile
 			float stackH;   // total height of the input grid
 			float rowH;     // height of the flow row, ring floor included
 			float bodyH;    // rowH plus breathing room
@@ -158,15 +161,17 @@ namespace Waila::UI
 			// height shared between the rows.
 			const float byWidth  = (kInGridW - (static_cast<float>(kInCols) - 1.0f) * kRowGap)
 			                     / static_cast<float>(kInCols);
-			const float rateH    = static_cast<float>(InputRateLines(m)) * kInRateH;
-			const float byHeight = (kRingD - (rows - 1.0f) * kRowGap) / rows - rateH;
+			const float rateH    = AnyInputRate(m)  ? kInRateH  : 0.0f;
+			const float shortH   = AnyInputShort(m) ? kInShortH : 0.0f;
+			const float byHeight = (kRingD - (rows - 1.0f) * kRowGap) / rows - rateH - shortH;
 
 			f.tile   = Clamp((std::min)(byWidth, byHeight), kTileInMin, kTileInMax);
 			f.rateH  = rateH;
+			f.shortH = shortH;
 			f.cellW  = InputCellWidth(m, f.tile);
 			f.gridW  = cols * f.cellW + (cols - 1.0f) * kRowGap;
 			f.slotW  = (std::max)(kInGridW, f.gridW);
-			f.stackH = rows * (f.tile + rateH) + (rows - 1.0f) * kRowGap;
+			f.stackH = rows * (f.tile + rateH + shortH) + (rows - 1.0f) * kRowGap;
 			f.rowH   = (std::max)(kRingD, f.stackH) + 14.0f;
 			f.bodyH  = f.rowH;
 
@@ -466,7 +471,7 @@ namespace Waila::UI
 
 				const float cellX = gridX + (f.cellW + kRowGap) * s * static_cast<float>(i % kInCols);
 				const float tx = cellX + (f.cellW - f.tile) * 0.5f * s;
-				const float ty = gridY + (rateH + f.tile + kRowGap) * s * static_cast<float>(i / kInCols) + rateH * s;
+				const float ty = gridY + (rateH + f.tile + f.shortH + kRowGap) * s * static_cast<float>(i / kInCols) + rateH * s;
 
 				const Rect tile = { tx, ty, tx + f.tile * s, ty + f.tile * s };
 				Draw::IconTile(ui, dl, tile, in.icon, pal, rounding * s, in.dim ? 0.45f : 1.0f, true);
@@ -475,14 +480,13 @@ namespace Waila::UI
 
 				if (!in.rate.empty())
 					Draw::TextCentered(ui, dl, midX, tile.y0 - rateH * s,
-						in.rate.c_str(), in.tone == Health::Idle ? pal.textMuted : Theme::Of(pal, in.tone),
-						kFontTiny * s);
+						in.rate.c_str(), pal.textMuted, kFontTiny * s);
 
 				if (!in.shortage.empty())
-					Draw::TextCentered(ui, dl, midX, tile.y0 - kInRateH * s,
+					Draw::TextCentered(ui, dl, midX, tile.y1 + 1.0f * s,
 						in.shortage.c_str(), pal.bad, kFontTiny * s);
 
-				// A starved input gets a red keyline as well as the dimming, so it
+				// A short input gets a red keyline as well as the dimming, so it
 				// still reads when the icon itself is dark.
 				if (in.dim)
 					ui->DL_AddRect(dl, tile.x0, tile.y0, tile.x1, tile.y1,
