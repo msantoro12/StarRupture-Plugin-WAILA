@@ -319,10 +319,12 @@ namespace Waila::UI
 		// stock and totals lines together.
 		constexpr size_t kMaxRateRows = 12;
 
-		std::string PerMin(float v)
+		std::string PerMin(float v, bool plusUnknown = false)
 		{
 			if (v < 0.0f)
 				return "?";
+			if (plusUnknown)
+				return PerMin(v) + "+?";
 
 			// FormatNumber would round a slow trickle down to "0".
 			if (v > 0.0f && v < 0.05f)
@@ -333,9 +335,20 @@ namespace Waila::UI
 			return buf;
 		}
 
+		// The spans of a From or To line, which `prefix` characters of "From " or
+		// "To " precede, drawn in `tone`.
+		std::vector<RateRow::Span> Spans(const std::vector<Waila::RailTextSpan>& in, size_t prefix, Health tone)
+		{
+			std::vector<RateRow::Span> out;
+			for (const Waila::RailTextSpan& s : in)
+				out.push_back({ prefix + s.begin, prefix + s.end, tone });
+			return out;
+		}
+
 		// An item's lines under its name, in order: where it comes from, where it
-		// goes, what the storage on the network holds of it, then its totals. The
-		// first three are left out when not known.
+		// goes, how short the takers are of it, what the storage on the network
+		// holds of it, then its totals. The middle three are left out when not
+		// known or not needed.
 		struct ItemLines
 		{
 			RateRow              head;
@@ -350,9 +363,15 @@ namespace Waila::UI
 			lines.head.name = r.displayName;
 			using Lead = RateRow::Lead;
 			if (!r.from.empty())
-				lines.details.push_back({ nullptr, "From " + r.from, true, Lead::Bullet });
+				lines.details.push_back({ nullptr, "From " + r.from, true, Lead::Bullet, Spans(r.fromStarved, 5, Health::Bad) });
 			if (!r.to.empty())
-				lines.details.push_back({ nullptr, "To " + r.to, true, Lead::Bullet });
+				lines.details.push_back({ nullptr, "To " + r.to, true, Lead::Bullet, Spans(r.toShort, 3, Health::Warn) });
+			if (r.perMinShort > 0.0f)
+			{
+				// Amber like the card's dot, the whole line.
+				const std::string text = "Short " + PerMin(r.perMinShort) + "/min";
+				lines.details.push_back({ nullptr, text, true, Lead::Bullet, { { 0, text.size(), Health::Warn } } });
+			}
 			if (r.stored >= 0 && !r.storedIn.empty())
 			{
 				const int32_t count = static_cast<int32_t>((std::min)(r.stored, static_cast<int64_t>(INT32_MAX)));
@@ -361,8 +380,8 @@ namespace Waila::UI
 			// The totals line is indented like the others with nothing in front.
 			lines.totals.lead = Lead::None;
 			// "\xC2\xB7" is a middle dot.
-			lines.totals.name = "min " + PerMin(r.perMinMin) + " \xC2\xB7 max " + PerMin(r.perMinMax)
-				+ " \xC2\xB7 current " + PerMin(r.perMinNow) + " /min";
+			lines.totals.name = "min " + PerMin(r.perMinMin) + " \xC2\xB7 max " + PerMin(r.perMinMax, r.plusUnknown)
+				+ " \xC2\xB7 current " + PerMin(r.perMinNow, r.plusUnknown) + " /min";
 			return lines;
 		}
 	}

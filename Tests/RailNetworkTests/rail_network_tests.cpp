@@ -379,6 +379,12 @@ namespace
 		return part;
 	}
 
+	FlowPart Starved(FlowPart part)
+	{
+		part.starved = true;
+		return part;
+	}
+
 	FlowPart Taker(uint64_t building, const std::string& item, float full)
 	{
 		return { building, item, false, full };
@@ -415,38 +421,38 @@ namespace
 		const ItemFlow* plate = FlowOf(flows, "Plate");
 		Check(plate && plate->sources == 3 && plate->consumers == 6, "plate: 3 sources, 6 consumers, duplicates counted once");
 		Check(plate && Near(plate->max, 90), "plate max: 3 x 30");
-		Check(plate && Near(plate->min, 20), "plate min: 90 - (5 x 10 + 20)");
-		Check(plate && Near(plate->now, 50), "plate now: 90 - (10 + 10 + 20) requesting");
+		Check(plate && Near(plate->min, 90), "plate min: all three can make 30, the takers do not come off");
+		Check(plate && Near(plate->now, 40), "plate now: 90 made, 10 + 10 + 20 requesting: the smaller, 40");
 
 		const ItemFlow* chem = FlowOf(flows, "Chemicals");
 		Check(chem && chem->sources == 1 && chem->consumers == 2, "chemicals: 1 source, 2 consumers");
-		Check(chem && Near(chem->max, 20) && Near(chem->min, 10) && Near(chem->now, 15), "chemicals: 20, 10, 15");
+		Check(chem && Near(chem->max, 20) && Near(chem->min, 20) && Near(chem->now, 5), "chemicals: 20, 20, 5");
 		Check(flows.front().item == "Plate", "the biggest flow comes first");
 	}
 
-	// The rail caps all three; nothing goes negative; an unread rate leaves
-	// what it feeds unknown.
+	// The rail caps all three; an unread rate leaves what it feeds unknown. max
+	// and min are about the makers only, now is what moves.
 	void TestFlowsLimits()
 	{
 		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 600), Requesting(Taker(2, "A", 900), false) }, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 0) && Near(flows[0].now, 480), "capped at the rail, floored at 0");
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 480) && Near(flows[0].now, 0), "capped at the rail; nobody requesting: nothing moves");
 
 		flows = SumFlows({ Maker(1, "A", 600), Requesting(Taker(2, "A", 60), true) }, 480.0f);
-		Check(Near(flows[0].min, 420) && Near(flows[0].now, 420), "the cap comes first, then the takers come off");
+		Check(Near(flows[0].min, 480) && Near(flows[0].now, 60), "the takers do not lower min; what moves is what they request");
 
 		flows = SumFlows({ Maker(1, "A", 60), Maker(2, "A", -1) }, 480.0f);
 		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "an unread source makes the row unknown");
 
 		flows = SumFlows({ Maker(1, "A", 60), Taker(2, "A", 30) }, 480.0f);
-		Check(Near(flows[0].min, 30) && flows[0].now < 0, "an unread request leaves now unknown");
+		Check(Near(flows[0].min, 60) && flows[0].now < 0, "an unread request leaves now unknown, not min");
 
-		flows = SumFlows({ Maker(1, "A", 60) }, -1.0f);
+		flows = SumFlows({ Maker(1, "A", 60), Requesting(Taker(2, "A", 100), true) }, -1.0f);
 		Check(Near(flows[0].max, 60) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "no capacity: uncapped");
 	}
 
-	// The rail's cap applies to the makers before the takers come off: min is
-	// max less every taker at full rate. The three cases are from a gss.27 dump.
-	void TestFlowsCapBeforeTakers()
+	// max and min are the makers capped by the rail, whatever the takers want;
+	// now is what moves. The cases are from a gss.27 dump.
+	void TestFlowsCapAndMin()
 	{
 		// Six furnaces make 2880 a minute, six takers want 240 in all.
 		std::vector<FlowPart> parts;
@@ -455,16 +461,19 @@ namespace
 		for (uint64_t i = 11; i <= 16; ++i)
 			parts.push_back(Taker(i, "A", 40));
 		std::vector<ItemFlow> flows = SumFlows(parts, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 240), "480 of 2880 made, 240 taken: min 240");
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 480), "480 of 2880 made: max and min 480, the takers do not count");
 
-		// Three fabricators make 540 (3 x 180), fifteen presses take 405.
+		// Three fabricators make 540 (3 x 180), one of them starved: it counts 0 in min.
 		parts.clear();
 		for (uint64_t i = 1; i <= 3; ++i)
-			parts.push_back(Maker(i, "A", 180));
-		for (uint64_t i = 11; i <= 25; ++i)
-			parts.push_back(Taker(i, "A", 27));
+			parts.push_back(i == 3 ? Starved(Stalled(Maker(i, "A", 180))) : Maker(i, "A", 180));
 		flows = SumFlows(parts, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 75), "480 of 540 made, 405 taken: min 75");
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 360), "480 of 540 made, one starved: min 360");
+
+		// A starved one under the cap: the others count in full.
+		flows = SumFlows({ Maker(1, "A", 100), Starved(Stalled(Maker(2, "A", 100))), Stalled(Maker(3, "A", 100)) }, 480.0f);
+		Check(Near(flows[0].max, 300) && Near(flows[0].min, 200),
+			"an output-full maker has its inputs, so it counts in min; a starved one does not");
 
 		// Twenty furnaces make 600 (one running, 30 now), six takers want 60 and request it now.
 		parts.clear();
@@ -473,16 +482,19 @@ namespace
 		for (uint64_t i = 11; i <= 16; ++i)
 			parts.push_back(Requesting(Taker(100 + i, "A", 10), true));
 		flows = SumFlows(parts, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 420) && Near(flows[0].now, 0),
-			"480 of 600 made, 60 taken: min 420, now 30 - 60 floored at 0");
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 480) && Near(flows[0].now, 30),
+			"480 of 600 made, 60 requested, one furnace running: now 30");
 
-		// Everything running: now is capped before the takers come off too.
+		// Everything running: now is the smaller of what is made (capped) and what is requested.
 		flows = SumFlows({ Maker(1, "A", 900), Requesting(Taker(2, "A", 100), true) }, 480.0f);
-		Check(Near(flows[0].now, 380), "now: 900 capped to 480, less 100");
+		Check(Near(flows[0].now, 100), "now: 900 capped to 480, 100 requested: 100");
+		flows = SumFlows({ Maker(1, "A", 900), Requesting(Taker(2, "A", 700), true) }, 480.0f);
+		Check(Near(flows[0].now, 480), "now: 700 requested of a rail that carries 480: 480");
 	}
 
 	// A Cargo Receiver or Sender has no rate to read: it is counted and named
-	// but adds to no total and leaves no figure unknown.
+	// but adds to no total. A receiver counts 0 in min and brings an unknown
+	// extra: "+?" after max and now with makers, "?" for them without.
 	void TestFlowsUnrated()
 	{
 		FlowPart receiver{ 90, "A", true };
@@ -491,12 +503,21 @@ namespace
 		sender.unrated = true;
 		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 100), receiver, Requesting(Taker(2, "A", 40), true), sender }, 480.0f);
 		Check(flows[0].sources == 2 && flows[0].consumers == 2, "the receiver and the sender are counted");
-		Check(Near(flows[0].max, 100) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "but add to no total: 100, 60, 60");
+		Check(Near(flows[0].max, 100) && Near(flows[0].min, 100) && Near(flows[0].now, 40), "but add to no total: 100, 100, 40");
+		Check(flows[0].plusUnknown, "with a receiver bringing more: the makers' part and +?");
 		Check(flows[0].judged && !flows[0].short_, "and the row stays judged");
 
 		flows = SumFlows({ receiver, Requesting(Taker(2, "A", 40), true) }, 480.0f);
 		Check(flows.size() == 1 && flows[0].judged, "an item only a receiver brings is a row");
-		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "its totals are unknown, not 0");
+		Check(flows[0].max < 0 && Near(flows[0].min, 0) && flows[0].now < 0 && !flows[0].plusUnknown,
+			"max and now are unknown, min counts the receiver as 0");
+
+		// Takers wanting more than the rail carries are short even when a receiver
+		// adds an unknown amount; below that they are not.
+		flows = SumFlows({ Maker(1, "A", 100), receiver, Requesting(Taker(2, "A", 600), true) }, 480.0f);
+		Check(flows[0].short_ && Near(flows[0].shortBy, 120), "600 requested of a rail that carries 480, a receiver or not: short by 120");
+		flows = SumFlows({ Maker(1, "A", 100), receiver, Requesting(Taker(2, "A", 200), true) }, 480.0f);
+		Check(!flows[0].short_, "200 requested, a receiver may bring the rest: not short");
 	}
 
 	FlowPart InStorage(FlowPart part, const std::string& name);
@@ -544,11 +565,11 @@ namespace
 	{
 		std::vector<ItemFlow> flows = SumFlows({ Stalled(Maker(1, "A", 240)), Stalled(Maker(2, "A", 240)),
 			Requesting(Taker(3, "A", 60), false) }, 480.0f);
-		Check(Near(flows[0].max, 480) && Near(flows[0].min, 420), "stalled makers still count in max and min");
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 480), "stalled makers still count in max and min");
 		Check(Near(flows[0].now, 0), "makers all stalled: nothing now");
 
 		flows = SumFlows({ Maker(1, "A", 240), Stalled(Maker(2, "A", 240)), Requesting(Taker(3, "A", 60), true) }, 480.0f);
-		Check(Near(flows[0].now, 180), "one of two running: 240 - 60 requesting");
+		Check(Near(flows[0].now, 60), "one of two running: 240 made, 60 requested: 60");
 	}
 
 	// short_: the consumers requesting right now want more than max, before the
@@ -557,13 +578,14 @@ namespace
 	{
 		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 480), Requesting(Taker(2, "A", 300), true),
 			Requesting(Taker(3, "A", 300), true), Requesting(Taker(4, "A", 300), false) }, 480.0f);
-		Check(flows[0].short_ && Near(flows[0].now, 0), "600 requested of 480: short, now floored at 0");
+		Check(flows[0].short_ && Near(flows[0].now, 480), "600 requested of 480: short, and the 480 the rail carries is what moves");
+		Check(Near(flows[0].shortBy, 120), "short by the takers requesting now (600) less max (480), not the one that is not");
 
 		flows = SumFlows({ Maker(1, "A", 480), Requesting(Taker(2, "A", 300), true), Requesting(Taker(3, "A", 300), false) }, 480.0f);
-		Check(!flows[0].short_, "300 requested of 480: not short");
+		Check(!flows[0].short_ && Near(flows[0].shortBy, 0), "300 requested of 480: not short, short by nothing");
 
 		flows = SumFlows({ Maker(1, "A", 900), Requesting(Taker(2, "A", 600), true) }, 480.0f);
-		Check(flows[0].short_, "600 requested of a rail that carries 480: short");
+		Check(flows[0].short_ && Near(flows[0].shortBy, 120), "600 requested of a rail that carries 480: short by 120");
 
 		flows = SumFlows({ Maker(1, "A", 60), Taker(2, "A", 30) }, 480.0f);
 		Check(!flows[0].short_, "an unread request leaves it not short");
@@ -613,6 +635,37 @@ namespace
 		std::vector<EndRow> many = { rows[0], rows[1], rows[2], rows[3] };
 		Check(EndsLine(many) == "3x Fabricator, 2x Furnace v.2, Furnace, +1 more", "three kinds at most, then +N more");
 		Check(EndsLine({}).empty(), "no building, no line");
+	}
+
+	// A kind with starved and running makers is two groups, so the card can
+	// colour only the starved ones; the spans give each group's text.
+	void TestStarvedGroups()
+	{
+		const std::vector<FlowPart> parts = {
+			Named(Maker(1, "Plate", 120), "Furnace v.2", 120),
+			Named(Starved(Maker(2, "Plate", 120)), "Furnace v.2", 0),
+			Named(Maker(3, "Plate", 120), "Furnace v.2", 120),
+			Named(Taker(10, "Plate", 10), "Press", 10),
+		};
+		const std::vector<EndRow> rows = GroupEnds(parts, { "Plate" });
+		Check(rows.size() == 3, "running furnaces, starved furnace, press (got " + std::to_string(rows.size()) + ")");
+		if (rows.size() != 3)
+			return;
+		Check(rows[0].count == 2 && !rows[0].starved, "the two running furnaces are one group");
+		Check(rows[1].count == 1 && rows[1].starved && rows[1].name == "Furnace v.2", "the starved one is a group of its own");
+
+		std::vector<EndSpan> spans;
+		const std::string line = EndsLine({ rows[0], rows[1] }, 3, &spans);
+		Check(line == "2x Furnace v.2, Furnace v.2", "both groups are named");
+		Check(spans.size() == 2 && !spans[0].starved && spans[1].starved, "only the second group is starved");
+		if (spans.size() == 2)
+			Check(line.substr(spans[0].begin, spans[0].end - spans[0].begin) == "2x Furnace v.2"
+				&& line.substr(spans[1].begin, spans[1].end - spans[1].begin) == "Furnace v.2",
+				"the spans cover each group's count and name, not the comma");
+
+		const std::vector<EndRow> all = GroupEnds({ Starved(Named(Maker(1, "Plate", 120), "Furnace v.2", 0)),
+			Starved(Named(Maker(2, "Plate", 120), "Furnace v.2", 0)) }, { "Plate" });
+		Check(all.size() == 1 && all[0].count == 2 && all[0].starved, "all starved: one starved group");
 	}
 
 	// Storage holds an item and neither makes nor takes it: it is listed at an
@@ -879,10 +932,11 @@ int main()
 	TestFlowsOneRowPerItem();
 	TestFlowsLimits();
 	TestFlowsStalledSource();
-	TestFlowsCapBeforeTakers();
+	TestFlowsCapAndMin();
 	TestFlowsUnrated();
 	TestFlowsStorageDot();
 	TestFlowsShort();
+	TestStarvedGroups();
 	TestEndLines();
 	TestAttachedLongLine();
 	TestAttachedEdges();

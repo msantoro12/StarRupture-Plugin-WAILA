@@ -873,6 +873,7 @@ namespace Waila::RailNetwork
 		bool        unrated = false;    // a source or consumer with no rate to read (a Cargo Receiver or Sender):
 		                                // it is counted and named but adds to no total
 		float       stock   = 0.0f;     // storage: how many of the item it holds
+		bool        starved = false;    // a source: missing an input of its own and not output full
 	};
 
 	// The totals of one item, items a minute; negative when unknown.
@@ -882,41 +883,48 @@ namespace Waila::RailNetwork
 		int32_t     sources   = 0;      // distinct machines making it
 		int32_t     consumers = 0;      // distinct machines taking it
 		float       output    = 0.0f;   // the sources' output, uncapped; orders the rows
-		float       max       = -1.0f;  // the sources' output, nobody pulling
-		float       min       = -1.0f;  // left with every consumer running full out
-		float       now       = -1.0f;  // what the sources put out right now (none while stalled), less the consumers requesting it right now
+		float       max       = -1.0f;  // the sources' output at full speed, capped by the rail
+		float       min       = -1.0f;  // what the sources can make with the inputs they get now (a starved one counts 0), capped
+		float       now       = -1.0f;  // what moves: the sources' output right now (capped) or what the consumers requesting it want, the smaller
 		bool        judged    = false;  // consumers take it and their requests are read, so short_ means something
 		bool        short_    = false;  // the consumers requesting it right now want more than the rail can bring
+		float       shortBy   = 0.0f;   // when short_: how many items a minute the consumers requesting it now want over what the rail can bring
+		bool        plusUnknown = false; // makers and a Cargo Receiver bring it: max and now are the makers' part and "+?" more
 	};
 
 	// Sums the parts into one flow per item that has a source, biggest output
 	// first. capacity is what the rail carries in items a minute (negative when
-	// unread, which leaves the figures uncapped). max is what the sources can
-	// put out, capped by the capacity; min is max less every consumer at full
-	// rate; now is what the sources put out right now (capped, and 0 for a
-	// source that is stalled) less the consumers requesting right now. min and
-	// now are floored at 0: the cap comes first, then the subtraction. A source
-	// whose rate is unread leaves the item's figures unknown; a consumer whose
-	// intake or request is unread leaves min or now unknown. An unrated part (a
-	// Cargo Receiver or Sender) is counted but adds to no total.
+	// unread, which leaves the figures uncapped). max is what the sources make
+	// at full speed, capped by the capacity; min is what they can make with the
+	// inputs they get now, the same capped: a starved source counts 0, any
+	// other its full rate; now is what moves, the smaller of what the sources
+	// put out right now (capped, and 0 for a source that is stalled) and what
+	// the consumers requesting right now want. min and max never depend on the
+	// consumers. A source whose rate is unread leaves the item's figures
+	// unknown; a consumer whose request is unread leaves now unknown. An
+	// unrated part (a Cargo Receiver or Sender) is counted but adds to no total.
+	// A Cargo Receiver is a source whose rate the game does not expose: it
+	// counts 0 in min, and in max and now it is an unknown extra, so with
+	// makers they read as the makers' part with plusUnknown set, and with no
+	// maker at all max and now are unknown (negative) while min is 0.
 	//
 	// short_ is set when the consumers requesting the item right now are not
-	// served. It is only judged (and only means something) when a consumer takes
-	// the item and every figure it needs is read. For an item some building
-	// makes it means max is below what they take, before the floor at 0. An item
-	// only storage holds or a Cargo Receiver brings has no rate to judge by: it
-	// is short when consumers request it and the storage holds none of it and no
-	// receiver brings it.
+	// served, and shortBy is by how much. It is only judged (and only means
+	// something) when a consumer takes the item and every figure it needs is
+	// read. For an item some building makes it means max is below what they
+	// take; with a receiver bringing more it means they take more than the rail
+	// carries. An item only storage holds or a Cargo Receiver brings has no
+	// rate to judge by: it is short when consumers request it and the storage
+	// holds none of it and no receiver brings it.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
 		struct Sum
 		{
 			ItemFlow flow;
 			bool     outputKnown = true;
-			bool     fullKnown   = true;
 			bool     nowKnown    = true;
 			float    outputNow = 0.0f;   // the sources' output right now
-			float    takeFull = 0.0f;
+			float    outputMin = 0.0f;   // what the sources can make with the inputs they get now
 			float    takeNow  = 0.0f;
 			bool     held     = false;   // storage holds it
 			float    stock    = 0.0f;    // how much the storage upstream holds
@@ -959,7 +967,10 @@ namespace Waila::RailNetwork
 			{
 				++sum.makers;
 				if (part.full >= 0.0f)
+				{
 					sum.flow.output += part.full;
+					sum.outputMin   += part.starved ? 0.0f : part.full;
+				}
 				else
 					sum.outputKnown = false;
 				if (part.now >= 0.0f)
@@ -968,10 +979,6 @@ namespace Waila::RailNetwork
 					sum.nowKnown = false;
 				continue;
 			}
-			if (part.full >= 0.0f)
-				sum.takeFull += part.full;
-			else
-				sum.fullKnown = false;
 			if (part.now >= 0.0f)
 				sum.takeNow += part.now;
 			else
@@ -997,20 +1004,29 @@ namespace Waila::RailNetwork
 			if (sum.outputKnown)
 			{
 				flow.max = cap(flow.output);
-				if (sum.fullKnown)
-					flow.min = (std::max)(0.0f, flow.max - sum.takeFull);
+				flow.min = cap(sum.outputMin);
 				if (sum.nowKnown)
 				{
-					flow.now    = (std::max)(0.0f, cap(sum.outputNow) - sum.takeNow);
+					flow.now    = (std::min)(cap(sum.outputNow), sum.takeNow);
 					flow.judged = flow.consumers > 0;
+					// What the rail can bring at most: the makers' max, or with a
+					// receiver adding an unknown amount, only what it carries.
+					const bool  unbounded = sum.brought && capacity < 0.0f;
+					const float bound     = sum.brought ? (capacity >= 0.0f ? capacity : 0.0f) : flow.max;
 					flow.short_ = flow.judged
-						&& (sum.makers > 0 ? flow.max < sum.takeNow
+						&& (sum.makers > 0 ? !unbounded && sum.takeNow > bound
 						                   : sum.takeNow > 0.0f && !sum.brought && sum.stock <= 0.0f);
+					if (flow.short_)
+						flow.shortBy = sum.takeNow - bound;
 				}
-				// Only a receiver brings it: its rate is unknown, so the totals are
-				// too ("?"), not 0.
+				// A receiver brings an unknown amount on top of the makers. With
+				// none, max and now are unknown ("?"), and min counts it as 0.
+				flow.plusUnknown = sum.makers > 0 && sum.brought;
 				if (sum.makers == 0 && sum.brought)
-					flow.max = flow.min = flow.now = -1.0f;
+				{
+					flow.max = -1.0f;
+					flow.now = -1.0f;
+				}
 			}
 			flows.push_back(std::move(flow));
 		}
@@ -1029,6 +1045,7 @@ namespace Waila::RailNetwork
 		std::string name;
 		std::string item;
 		std::string via;       // a source: the storage its items reach the rail through
+		bool        starved = false;   // a source: these are the ones missing an input; a kind with both is two rows
 		int32_t     count = 0;
 	};
 
@@ -1059,7 +1076,8 @@ namespace Waila::RailNetwork
 
 			const std::string& via = part.source ? part.via : std::string();
 			auto row = std::find_if(rows.begin(), rows.end(), [&](const EndRow& r)
-				{ return r.source == part.source && r.item == part.item && r.name == part.name && r.via == via; });
+				{ return r.source == part.source && r.item == part.item && r.name == part.name && r.via == via
+					&& r.starved == part.starved; });
 			if (row == rows.end())
 			{
 				EndRow added;
@@ -1067,6 +1085,7 @@ namespace Waila::RailNetwork
 				added.name   = part.name;
 				added.item   = part.item;
 				added.via    = via;
+				added.starved = part.starved;
 				rows.push_back(std::move(added));
 				row = rows.end() - 1;
 			}
@@ -1080,17 +1099,29 @@ namespace Waila::RailNetwork
 	// One end of an item as a line, names only: "2x Furnace, Furnace v.2", with
 	// "via <storage>" after a kind reached through storage. At most `maxKinds`
 	// kinds are named, then "+N more". `rows` are those of one item and end,
-	// largest first (GroupEnds). Empty when there are none.
-	inline std::string EndsLine(const std::vector<EndRow>& rows, size_t maxKinds = 3)
+	// largest first (GroupEnds). Empty when there are none. `spans`, when given,
+	// gets the byte range of each named kind's "2x Furnace" text (without its
+	// "via"), with whether the kind is starved, so the card can colour the names.
+	struct EndSpan
+	{
+		size_t begin   = 0;
+		size_t end     = 0;
+		bool   starved = false;
+	};
+
+	inline std::string EndsLine(const std::vector<EndRow>& rows, size_t maxKinds = 3, std::vector<EndSpan>* spans = nullptr)
 	{
 		std::string line;
 		for (size_t i = 0; i < rows.size() && i < maxKinds; ++i)
 		{
 			if (i)
 				line += ", ";
+			const size_t begin = line.size();
 			if (rows[i].count > 1)
 				line += std::to_string(rows[i].count) + "x ";
 			line += rows[i].name;
+			if (spans)
+				spans->push_back({ begin, line.size(), rows[i].starved });
 			if (!rows[i].via.empty())
 				line += " via " + rows[i].via;
 		}

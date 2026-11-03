@@ -3,6 +3,7 @@
 #include "plugin_interface.h"
 #include "ui_theme.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -48,10 +49,20 @@ namespace Waila::UI
 		// What stands in the icon column in front of the text.
 		enum class Lead : uint8_t { Icon, Bullet, None };
 
+		// A stretch of `name` drawn in a health colour instead of the plain one:
+		// byte offsets, end exclusive.
+		struct Span
+		{
+			size_t begin = 0;
+			size_t end   = 0;
+			Health tone  = Health::Idle;
+		};
+
 		PluginTextureHandle icon = nullptr;
 		std::string         name;
 		bool                wrap = false;   // a long line continues on the next one instead of being cut
 		Lead                lead = Lead::Icon;
+		std::vector<Span>   spans;          // coloured stretches of `name`, in order
 	};
 
 	// Everything the card needs for one frame, with every engine pointer already
