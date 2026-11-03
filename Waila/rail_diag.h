@@ -17,10 +17,10 @@
 
 namespace Waila::RailDiag
 {
-	// A dump never passes ~700 log lines: the body stops at kBodyMax and says so,
+	// A dump never passes ~1800 log lines: the body stops at kBodyMax and says so,
 	// the summary and card lines have their own room.
-	constexpr size_t kBodyMax = 600;
-	constexpr size_t kTailMax = 60;
+	constexpr size_t kBodyMax = 1600;
+	constexpr size_t kTailMax = 100;
 	constexpr size_t kCardMax = 40;
 
 	inline bool     g_enabled     = false;     // the "Rail Diagnostic Dump" setting

@@ -472,6 +472,8 @@ namespace Waila
 					RAIL_DIAG_LINE("  upstream machine %s \"%s\" SKIPPED: %s", RailDiag::Id(machine).c_str(), nameOf(machine).c_str(),
 						!crafter.isCrafter ? "no crafting data (not a crafter, or the crafter read is off/faulted; see the line above)"
 						                   : "crafter without a usable recipe");
+					RAIL_DIAG_TAIL("upstream machine %s \"%s\" gives no From part (no recipe or no crafting data): its items are not counted",
+						RailDiag::Id(machine).c_str(), nameOf(machine).c_str());
 					// WAILA-RAIL-DIAG END
 					continue;
 				}
@@ -826,13 +828,39 @@ namespace Waila
 					RAIL_DIAG_LINE("  part %s %s \"%s\" item %s full=%.2f now=%.2f%s%s", part.source ? "FROM" : "TO  ", RailDiag::Id(part.building).c_str(),
 						part.name.c_str(), part.item.c_str(), part.full, part.now, part.storage ? " [storage]" : "",
 						part.via.empty() ? "" : (" via " + part.via).c_str());
+				// The summary below is a TAIL, which a long walk cannot cut.
+				RAIL_DIAG_TAIL("rail capacity %.2f items/min (negative = unread), starved feeder=%d", g_cache.capacity, g_cache.starvedFeeder);
 				for (const RailNetwork::ItemFlow& flow : g_cache.flows)
-					RAIL_DIAG_LINE("  flow %s: %d source(s), %d consumer(s), output=%.2f -> min=%.2f now=%.2f max=%.2f", flow.item.c_str(),
-						flow.sources, flow.consumers, flow.output, flow.min, flow.now, flow.max);
+				{
+					int makers = 0, running = 0, takers = 0, requesting = 0;
+					float takeFull = 0.0f, takeNow = 0.0f, outputNow = 0.0f;
+					for (const RailNetwork::FlowPart& part : g_cache.parts)
+					{
+						if (part.item != flow.item || part.storage)
+							continue;
+						if (part.source)
+						{
+							++makers;
+							running += part.now > 0.0f;
+							outputNow += part.now > 0.0f ? part.now : 0.0f;
+						}
+						else
+						{
+							++takers;
+							requesting += part.now > 0.0f;
+							takeFull += part.full > 0.0f ? part.full : 0.0f;
+							takeNow += part.now > 0.0f ? part.now : 0.0f;
+						}
+					}
+					RAIL_DIAG_TAIL("flow %s: makers %d (%d putting out now, output now %.2f, full %.2f), takers %d (%d requesting, take now %.2f, take full %.2f)",
+						flow.item.c_str(), makers, running, outputNow, flow.output, takers, requesting, takeNow, takeFull);
+					RAIL_DIAG_TAIL("flow %s: min=%.2f now=%.2f max=%.2f judged=%d short=%d", flow.item.c_str(), flow.min, flow.now, flow.max,
+						flow.judged, flow.short_);
+				}
 				if (g_cache.flows.empty())
-					RAIL_DIAG_LINE("  no flows: no maker, no storage and no request gave the rail an item");
+					RAIL_DIAG_TAIL("no flows: no maker, no storage and no request gave the rail an item");
 				for (const auto& stock : g_cache.stock)
-					RAIL_DIAG_LINE("  stock %s: %lld in %zu storage(s)", stock.first.c_str(), static_cast<long long>(stock.second.count),
+					RAIL_DIAG_TAIL("stock %s: %lld in %zu storage(s)", stock.first.c_str(), static_cast<long long>(stock.second.count),
 						stock.second.storages.size());
 			}
 			// WAILA-RAIL-DIAG END
