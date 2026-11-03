@@ -17,6 +17,10 @@
 #include <utility>
 #include <vector>
 
+// WAILA-RAIL-DIAG BEGIN
+#include "rail_diag.h"
+// WAILA-RAIL-DIAG END
+
 namespace Waila::RailNetwork
 {
 	struct Vec3
@@ -618,6 +622,13 @@ namespace Waila::RailNetwork
 	// every rail at the nodes in `from`). `read(node, NodeView&)` returns false
 	// for a node it cannot read. At most maxNodes nodes are read and
 	// maxMachines machines kept each way; truncated is set when either bites.
+	// WAILA-RAIL-DIAG BEGIN
+	inline const char* DiagKind(NodeKind k)
+	{
+		return k == NodeKind::PassThrough ? "pole/junction (pass-through)" : k == NodeKind::Storage ? "storage" : "machine";
+	}
+	// WAILA-RAIL-DIAG END
+
 	template <class Read>
 	Attached FindAttached(const std::vector<uint64_t>& from, Read&& read, size_t maxNodes, size_t maxMachines,
 	                      uint64_t rail = 0)
@@ -632,11 +643,19 @@ namespace Waila::RailNetwork
 			if (views.size() >= maxNodes)
 			{
 				out.truncated = true;
+				// WAILA-RAIL-DIAG BEGIN
+				RAIL_DIAG_LINE("    node %s NOT READ: node limit %zu reached (walk is truncated)", RailDiag::Id(node).c_str(), maxNodes);
+				// WAILA-RAIL-DIAG END
 				return nullptr;
 			}
 			NodeView v;
 			if (!read(node, v))
+			{
+				// WAILA-RAIL-DIAG BEGIN
+				RAIL_DIAG_LINE("    node %s NOT READ: ReadNode failed (see the line above it for the reason)", RailDiag::Id(node).c_str());
+				// WAILA-RAIL-DIAG END
 				return nullptr;
+			}
 			return &views.emplace(node, std::move(v)).first->second;
 		};
 
@@ -652,16 +671,35 @@ namespace Waila::RailNetwork
 			std::set<Step> reached;    // a node, and the rail it was reached by
 			std::set<Step> expanded;   // a node, and the track it was walked from
 			std::vector<Step> queue;
+			// WAILA-RAIL-DIAG BEGIN
+			std::map<Step, int> diagDepth;   // walk depth of each queued step
+			const char* diagDir = upstream ? "UP" : "DOWN";
+			RAIL_DIAG_LINE("walk %s (%s): %zu seed(s)", diagDir,
+				upstream ? "against the flow: machines whose output can reach the rail"
+				         : "with the flow: machines the start nodes and upstream machines can feed",
+				seeds.size());
+			// WAILA-RAIL-DIAG END
 			auto keep = [&](uint64_t machine)
 			{
 				if (std::find(machines.begin(), machines.end(), machine) != machines.end())
+				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("    machine %s already kept by this walk", RailDiag::Id(machine).c_str());
+					// WAILA-RAIL-DIAG END
 					return true;
+				}
 				if (machines.size() >= maxMachines)
 				{
 					out.truncated = true;
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("    machine %s DROPPED: machine cap %zu reached (walk stops, truncated)", RailDiag::Id(machine).c_str(), maxMachines);
+					// WAILA-RAIL-DIAG END
 					return false;
 				}
 				machines.push_back(machine);
+				// WAILA-RAIL-DIAG BEGIN
+				RAIL_DIAG_LINE("    machine %s KEPT (%s list, #%zu)", RailDiag::Id(machine).c_str(), diagDir, machines.size());
+				// WAILA-RAIL-DIAG END
 				return true;
 			};
 			auto expand = [&](const Step& at, const NodeView& v)
@@ -676,22 +714,77 @@ namespace Waila::RailNetwork
 							track = link.track;
 							break;
 						}
+				// WAILA-RAIL-DIAG BEGIN
+				const int diagD = RailDiag::Active() ? diagDepth[at] : 0;
+				RAIL_DIAG_LINE("  [%s d%d] node %s reached by rail %s: %s, track %llu, %zu link(s)", diagDir, diagD,
+					RailDiag::Id(at.first).c_str(), RailDiag::Id(at.second).c_str(), DiagKind(v.kind),
+					static_cast<unsigned long long>(track), v.links.size());
+				// WAILA-RAIL-DIAG END
 				if (!expanded.insert({ at.first, track }).second)
+				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("    STOP: node already expanded on this track (visited)");
+					// WAILA-RAIL-DIAG END
 					return;
+				}
 				if (v.kind == NodeKind::Storage && std::find(storage.begin(), storage.end(), at.first) == storage.end())
+				{
 					storage.push_back(at.first);
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("    storage %s walked through (%s storage list, #%zu); the walk passes on", RailDiag::Id(at.first).c_str(), diagDir, storage.size());
+					// WAILA-RAIL-DIAG END
+				}
+				// WAILA-RAIL-DIAG BEGIN
+				size_t diagQueued = 0;
+				// WAILA-RAIL-DIAG END
 				for (const NodeLink& link : v.links)
+				{
 					if ((!track || link.track == track) && (upstream ? link.in : link.out) && link.other
 						&& reached.insert({ link.other, link.rail }).second)
+					{
 						queue.push_back({ link.other, link.rail });
+						// WAILA-RAIL-DIAG BEGIN
+						diagDepth[{ link.other, link.rail }] = diagD + 1;
+						++diagQueued;
+						RAIL_DIAG_LINE("    -> node %s via rail %s track %llu (in=%d out=%d): queued at d%d",
+							RailDiag::Id(link.other).c_str(), RailDiag::Id(link.rail).c_str(),
+							static_cast<unsigned long long>(link.track), link.in, link.out, diagD + 1);
+						// WAILA-RAIL-DIAG END
+					}
+					// WAILA-RAIL-DIAG BEGIN
+					else
+					{
+						const bool trackOk = !track || link.track == track;
+						const bool dirOk   = upstream ? link.in : link.out;
+						RAIL_DIAG_LINE("    -x node %s via rail %s track %llu (in=%d out=%d): skipped, %s",
+							RailDiag::Id(link.other).c_str(), RailDiag::Id(link.rail).c_str(),
+							static_cast<unsigned long long>(link.track), link.in, link.out,
+							!trackOk ? "other track of a paired-socket node"
+							: !dirOk ? (upstream ? "rail does not bring items into this node" : "rail does not take items out of this node")
+							: !link.other ? "no node at the rail's far end" : "far end already reached by that rail (visited)");
+					}
+					// WAILA-RAIL-DIAG END
+				}
+				// WAILA-RAIL-DIAG BEGIN
+				if (!diagQueued)
+					RAIL_DIAG_LINE("    STOP: no onward link from this node in the walk's direction");
+				// WAILA-RAIL-DIAG END
 			};
 			for (const Step& seed : seeds)
 			{
 				const NodeView* v = view(seed.first);
 				if (!v)
+				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("  [%s d0] seed node %s: STOP, could not be read", diagDir, RailDiag::Id(seed.first).c_str());
+					// WAILA-RAIL-DIAG END
 					continue;
+				}
 				if (v->kind == NodeKind::Machine && upstream)
 				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("  [UP d0] seed node %s is a MACHINE: kept, the walk ends there", RailDiag::Id(seed.first).c_str());
+					// WAILA-RAIL-DIAG END
 					if (!keep(seed.first))
 						return;
 					continue;
@@ -703,9 +796,19 @@ namespace Waila::RailNetwork
 				const Step at = queue[i];
 				const NodeView* v = view(at.first);
 				if (!v)
+				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("  [%s d%d] node %s reached by rail %s: STOP, could not be read", diagDir, diagDepth[at],
+						RailDiag::Id(at.first).c_str(), RailDiag::Id(at.second).c_str());
+					// WAILA-RAIL-DIAG END
 					continue;
+				}
 				if (v->kind == NodeKind::Machine)
 				{
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("  [%s d%d] node %s reached by rail %s: MACHINE, the walk ends there", diagDir, diagDepth[at],
+						RailDiag::Id(at.first).c_str(), RailDiag::Id(at.second).c_str());
+					// WAILA-RAIL-DIAG END
 					if (!keep(at.first))
 						return;
 					continue;

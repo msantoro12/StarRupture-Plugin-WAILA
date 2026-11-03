@@ -10,6 +10,9 @@
 #include "cargo_sender_detector.h"
 #include "cargo_receiver_detector.h"
 #include "rail_detector.h"
+// WAILA-RAIL-DIAG BEGIN
+#include "rail_diag.h"
+// WAILA-RAIL-DIAG END
 
 #include <cmath>
 #include <cstdio>
@@ -439,6 +442,21 @@ namespace Waila::UI
 			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
 			out.footRight = buf;
 		}
+
+		// WAILA-RAIL-DIAG BEGIN
+		if (RailDiag::CardPending())
+		{
+			RAIL_DIAG_CARD("card: header \"%s\", %zu row(s) shown, footer-right \"%s\", note \"%s\" (%s)", out.statusText.c_str(),
+				out.rates.size(), out.footRight.c_str(), out.ratesNote.c_str(),
+				!out.rates.empty() ? "rows shown, no note"
+				: info.fromMass && !info.note.empty() ? "note from RailDetector::GetRailInfo"
+				: "fallback in Card::FromRail: not read from the Mass data, or no note");
+			for (const RateRow& row : out.rates)
+				RAIL_DIAG_CARD("  card row \"%s\" min=%s now=%s max=%s%s", row.name.c_str(), row.min.c_str(), row.now.c_str(),
+					row.max.c_str(), row.tone == Health::Bad ? " (red)" : "");
+			RailDiag::CardDone();
+		}
+		// WAILA-RAIL-DIAG END
 	}
 
 	// -------------------------------------------------------------------------

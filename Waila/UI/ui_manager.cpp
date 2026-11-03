@@ -7,6 +7,9 @@
 #include "UI/ui_draw.h"
 #include "UI/ui_theme.h"
 #include "UI/waila_card.h"
+// WAILA-RAIL-DIAG BEGIN
+#include "rail_diag.h"
+// WAILA-RAIL-DIAG END
 #include "Engine_classes.hpp"
 #include "Engine_structs.hpp"
 #include "Chimera_classes.hpp"
@@ -165,6 +168,9 @@ namespace Waila::UI
 		m_scale                 = WailaPluginConfig::Config::GetScale();
 		m_opacity               = WailaPluginConfig::Config::GetOpacity();
 		m_showDescriptions      = WailaPluginConfig::Config::ShouldRenderDescriptions();
+		// WAILA-RAIL-DIAG BEGIN
+		RailDiag::g_enabled     = WailaPluginConfig::Config::GetRailDiagnosticDump();
+		// WAILA-RAIL-DIAG END
 
 		ClampSettings();
 		Card::SetShowDescriptions(m_showDescriptions);
@@ -254,6 +260,13 @@ namespace Waila::UI
 		if      (strcmp(key, "Max Distance") == 0) s_instance->m_maxDistance = strtof(newValue, nullptr);
 		else if (strcmp(key, "Scale")        == 0) s_instance->m_scale       = strtof(newValue, nullptr);
 		else if (strcmp(key, "Opacity")      == 0) s_instance->m_opacity     = strtof(newValue, nullptr);
+		// WAILA-RAIL-DIAG BEGIN
+		else if (strcmp(key, "Rail Diagnostic Dump") == 0)
+		{
+			RailDiag::g_enabled = ParseConfigBool(newValue);
+			return;   // nothing about the card's look changes
+		}
+		// WAILA-RAIL-DIAG END
 		else if (strcmp(key, "Render Building Descriptions") == 0)
 		{
 			s_instance->m_showDescriptions = ParseConfigBool(newValue);

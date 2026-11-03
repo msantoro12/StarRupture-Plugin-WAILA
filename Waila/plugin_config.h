@@ -46,7 +46,16 @@ namespace WailaPluginConfig
 			"Opacity of the WAILA card background",
 			0.30f,
 			1.0f
+		},
+		// WAILA-RAIL-DIAG BEGIN
+		{
+			"WAILA",
+			"Rail Diagnostic Dump",
+			ConfigValueType::Boolean,
+			"false",
+			"Write a one-time dump of a drone rail's whole chain to the log each time you aim at a new rail (for troubleshooting)"
 		}
+		// WAILA-RAIL-DIAG END
 	};
 
 	static const ConfigSchema SCHEMA = {
@@ -94,6 +103,13 @@ namespace WailaPluginConfig
 		{
 			return s_self ? s_self->config->ReadFloat(s_self, "WAILA", "Opacity", 0.92f) : 0.92f;
 		}
+
+		// WAILA-RAIL-DIAG BEGIN
+		static bool GetRailDiagnosticDump()
+		{
+			return s_self ? s_self->config->ReadBool(s_self, "WAILA", "Rail Diagnostic Dump", false) : false;
+		}
+		// WAILA-RAIL-DIAG END
 
 	private:
 		static IPluginSelf* s_self;
