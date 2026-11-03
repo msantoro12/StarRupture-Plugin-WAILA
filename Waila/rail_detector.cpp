@@ -41,8 +41,8 @@ namespace Waila
 		// the next refresh.
 		//
 		// The walk is the game's own rail network from its Mass data, loaded or
-		// not (FindAttached, rail_mass.h). When the Mass reader is off, or its walk
-		// finds no maker, the loaded rail layout stands in: only actors the game has spawned are visible
+		// not (FindAttached, rail_mass.h). When the Mass reader is off, the loaded
+		// rail layout stands in: only actors the game has spawned are visible
 		// to GetAllActorsOfClass, and player buildings are streamed in around the
 		// camera (INFERRED), so that one can cut a long rail short.
 		struct ItemInfo
@@ -57,6 +57,7 @@ namespace Waila
 			std::chrono::steady_clock::time_point     stamp{};
 			bool                                      fromMass  = false;
 			bool                                      found     = false;   // the Mass walk could start from the rail
+			bool                                      linked    = false;   // it found a building or storage linked to the rail
 			bool                                      truncated = false;
 			float                                     capacity  = -1.0f;   // items a minute; negative when unread
 			std::vector<RailNetwork::FlowPart>        parts;
@@ -64,14 +65,13 @@ namespace Waila
 			std::unordered_map<std::string, ItemInfo> items;
 
 			// What the storage the walk passed through holds, per item, and the
-			// items in the order first found.
+			// name of each storage holding it.
 			struct Stock
 			{
-				int64_t count    = 0;
-				int32_t storages = 0;
+				int64_t                  count = 0;
+				std::vector<std::string> storages;
 			};
 			std::unordered_map<std::string, Stock> stock;
-			std::vector<std::string>               stockOrder;
 		};
 
 		Cache g_cache;
@@ -342,13 +342,40 @@ namespace Waila
 			return kUnknownBuilding;
 		}
 
+		// A storage's name for the stock line: "Storage Depot v.2", "2x Storage
+		// Depot v.2", or a count when the names differ.
+		std::string StorageLabel(const std::vector<std::string>& names)
+		{
+			if (names.empty())
+				return std::string();
+			const bool same = std::all_of(names.begin(), names.end(), [&](const std::string& n) { return n == names.front(); });
+			if (!same)
+				return std::to_string(names.size()) + " storages";
+			return names.size() > 1 ? std::to_string(names.size()) + "x " + names.front() : names.front();
+		}
+
+		// What a taker downstream does with the rail's items: the ingredients its
+		// recipe takes at its crafting speed, and its open requests.
+		struct Taker
+		{
+			RailMass::Entity                  machine = 0;
+			std::vector<Input>                inputs;
+			std::vector<RailMass::RequestView> requests;
+			bool                              requestsRead = false;
+		};
+
 		// The machines attached to the rail's network (FindAttached) and each
-		// one's part in the sums: an upstream crafter makes its recipe's item at
-		// its full rate (0 now while stalled); a downstream crafter takes each
-		// ingredient one of them makes, now only while it has a request open
-		// for it. A filtered rail only carries that item. Storage is neither: it
-		// is walked through, and its stock is counted on its own. False when the
-		// rail's ends cannot be read.
+		// one's part in the sums. An upstream crafter makes its recipe's item at
+		// its full rate (0 now while stalled). Storage upstream holds the items
+		// in its stock, which can leave on the rail; the machines behind it are
+		// found by the walk, which passes through it. A downstream machine takes
+		// each item the rail carries that its recipe uses or its requests ask
+		// for, now only while it has a request open for it. A filtered rail only
+		// carries that item. When the walk finds no maker for an item a
+		// downstream machine asks for, the source its request names stands in,
+		// and when it finds no taker for an item a maker ships out, the
+		// destination the maker's request names. False when the rail's ends
+		// cannot be read.
 		bool CollectAttached(RailMass::Entity rail, const std::string& filterUnique, Cache& out)
 		{
 			RailMass::Entity start = 0, end = 0;
@@ -356,15 +383,36 @@ namespace Waila
 			if (!RailMass::ReadEnds(rail, start, end, twoWay))
 				return false;
 			std::vector<uint64_t> from{ start };
+			std::vector<uint64_t> to{ end };
 			if (twoWay)
+			{
 				from.push_back(end);
+				to.push_back(start);
+			}
 
-			const RailNetwork::Attached attached = RailNetwork::FindAttached(from,
+			const RailNetwork::Attached attached = RailNetwork::FindAttached(from, to,
 				[](uint64_t node, RailNetwork::NodeView& view) { return RailMass::ReadNode(node, view); },
 				kMaxRails, kMaxSources, rail);
 			out.truncated = attached.truncated;
+			out.linked = !attached.upstream.empty() || !attached.downstream.empty()
+				|| !attached.upstreamStorage.empty() || !attached.downstreamStorage.empty();
 
-			std::unordered_set<std::string> made;
+			std::unordered_map<uint64_t, std::string> names;
+			auto nameOf = [&](uint64_t entity) -> const std::string&
+			{
+				const auto [at, added] = names.try_emplace(entity);
+				if (added)
+					at->second = BuildingNameOf(entity);
+				return at->second;
+			};
+			auto carriesItem = [&](const std::string& unique) { return filterUnique.empty() || unique == filterUnique; };
+
+			const std::unordered_set<uint64_t> upstreamStorage(attached.upstreamStorage.begin(), attached.upstreamStorage.end());
+			std::unordered_set<uint64_t> upstreamSet(attached.upstream.begin(), attached.upstream.end());
+			upstreamSet.insert(upstreamStorage.begin(), upstreamStorage.end());
+
+			// The items on the rail: those a building makes or storage upstream holds.
+			std::unordered_set<std::string> carried;
 			for (const RailMass::Entity machine : attached.upstream)
 			{
 				RailMass::CrafterState crafter;
@@ -374,48 +422,27 @@ namespace Waila
 				if (!item)
 					continue;
 				const std::string unique = Fields::UniqueNameOf(item);
-				if (!filterUnique.empty() && unique != filterUnique)
+				if (!carriesItem(unique))
 					continue;
 
 				Remember(out, item, unique);
-				made.insert(unique);
+				carried.insert(unique);
 				float full = -1.0f;
 				if (!RecipeRate(crafter.recipe, 0, crafter.speed, full))
 					full = -1.0f;
 				RailNetwork::FlowPart part{ machine, unique, true, full };
 				part.now  = full >= 0.0f ? (crafter.stalled ? 0.0f : full) : -1.0f;
-				part.name = BuildingNameOf(machine);
+				part.name = nameOf(machine);
+				const auto through = attached.upstreamVia.find(machine);
+				if (through != attached.upstreamVia.end())
+					part.via = nameOf(through->second);
 				out.parts.push_back(std::move(part));
 			}
 
-			std::vector<UAuItemDataBase*> wanted;
-			for (const RailMass::Entity machine : attached.downstream)
-			{
-				RailMass::CrafterState crafter;
-				if (!RailMass::ReadCrafter(machine, crafter) || !crafter.isCrafter || !crafter.recipe)
-					continue;
-				std::vector<Input> inputs = InputsOf(crafter.recipe, crafter.speed);
-				inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
-					[&](const Input& in) { return !made.count(in.item); }), inputs.end());
-				if (inputs.empty())
-					continue;
-
-				const bool requestsRead = RailMass::ReadWanted(machine, wanted);
-				const std::string name = BuildingNameOf(machine);
-				for (const Input& in : inputs)
-				{
-					const bool requesting = std::any_of(wanted.begin(), wanted.end(),
-						[&](UAuItemDataBase* w) { return Fields::UniqueNameOf(w) == in.item; });
-					RailNetwork::FlowPart taker{ machine, in.item, false, in.perMin };
-					taker.now  = !requestsRead ? -1.0f : requesting ? in.perMin : 0.0f;
-					taker.name = name;
-					out.parts.push_back(std::move(taker));
-				}
-			}
-
 			// The stock of every storage the walks passed through, counted once:
-			// all of what the storage upstream holds, which can leave on the
-			// rail, and of the storage downstream the items the rail carries.
+			// all of what the storage upstream holds, which can leave on the rail,
+			// and of the storage downstream the items the rail carries. Storage
+			// holding an item is listed at that end when no building is.
 			std::unordered_set<uint64_t> counted;
 			std::vector<StoredItemEntry> held;
 			auto count = [&](const std::vector<uint64_t>& storages, bool upstream)
@@ -426,21 +453,129 @@ namespace Waila
 						continue;
 					for (const StoredItemEntry& entry : held)
 					{
-						if (entry.uniqueName.empty() || (!filterUnique.empty() && entry.uniqueName != filterUnique))
+						if (entry.uniqueName.empty() || !carriesItem(entry.uniqueName))
 							continue;
-						if (!upstream && !made.count(entry.uniqueName) && !out.stock.count(entry.uniqueName))
+						if (!upstream && !carried.count(entry.uniqueName))
 							continue;
 						Remember(out, entry.itemData, entry.uniqueName);
-						const auto [at, added] = out.stock.try_emplace(entry.uniqueName);
-						if (added)
-							out.stockOrder.push_back(entry.uniqueName);
-						at->second.count += entry.count;
-						++at->second.storages;
+						Cache::Stock& stock = out.stock[entry.uniqueName];
+						stock.count += entry.count;
+						stock.storages.push_back(nameOf(storage));
+
+						RailNetwork::FlowPart part{ storage, entry.uniqueName, upstream };
+						part.name    = nameOf(storage);
+						part.storage = true;
+						out.parts.push_back(std::move(part));
+						if (upstream)
+							carried.insert(entry.uniqueName);
 					}
 				}
 			};
 			count(attached.upstreamStorage, true);
+
+			std::vector<Taker> takers;
+			for (const RailMass::Entity machine : attached.downstream)
+			{
+				Taker taker;
+				taker.machine = machine;
+				RailMass::CrafterState crafter;
+				if (RailMass::ReadCrafter(machine, crafter) && crafter.isCrafter && crafter.recipe)
+					taker.inputs = InputsOf(crafter.recipe, crafter.speed);
+				taker.requestsRead = RailMass::ReadRequests(machine, taker.requests);
+				if (!taker.inputs.empty() || !taker.requests.empty())
+					takers.push_back(std::move(taker));
+			}
+
+			// An item a taker asks for from a source on the way back to the rail
+			// is on the rail even when no maker was found for it.
+			for (const Taker& taker : takers)
+			{
+				for (const RailMass::RequestView& request : taker.requests)
+				{
+					const std::string unique = Fields::UniqueNameOf(request.wanted);
+					if (!carriesItem(unique) || carried.count(unique))
+						continue;
+					for (const RailMass::Delivery& delivery : request.deliveries)
+					{
+						if (!upstreamSet.count(delivery.source))
+							continue;
+						Remember(out, request.wanted, unique);
+						carried.insert(unique);
+						RailNetwork::FlowPart part{ delivery.source, unique, true };
+						part.name    = nameOf(delivery.source);
+						part.storage = upstreamStorage.count(delivery.source) != 0;
+						out.parts.push_back(std::move(part));
+						break;
+					}
+				}
+			}
+
+			std::unordered_set<std::string> taken;
+			for (const Taker& taker : takers)
+			{
+				const std::string& name = nameOf(taker.machine);
+				auto requesting = [&](const std::string& item)
+				{
+					return std::any_of(taker.requests.begin(), taker.requests.end(),
+						[&](const RailMass::RequestView& r) { return Fields::UniqueNameOf(r.wanted) == item; });
+				};
+				auto add = [&](const std::string& item, float perMin)
+				{
+					RailNetwork::FlowPart part{ taker.machine, item, false, perMin };
+					part.now  = !taker.requestsRead ? -1.0f : requesting(item) ? perMin : 0.0f;
+					part.name = name;
+					out.parts.push_back(std::move(part));
+					taken.insert(item);
+				};
+				std::unordered_set<std::string> added;
+				for (const Input& in : taker.inputs)
+				{
+					if (carried.count(in.item) && added.insert(in.item).second)
+						add(in.item, in.perMin);
+				}
+				for (const RailMass::RequestView& request : taker.requests)
+				{
+					const std::string unique = Fields::UniqueNameOf(request.wanted);
+					if (carried.count(unique) && added.insert(unique).second)
+						add(unique, -1.0f);
+				}
+			}
 			count(attached.downstreamStorage, false);
+
+			// An item no building takes: where the requests of the makers behind
+			// the rail ship it to.
+			if (std::any_of(carried.begin(), carried.end(), [&](const std::string& item) { return !taken.count(item); }))
+			{
+				std::unordered_map<uint64_t, bool> isStorage;
+				std::vector<RailMass::RequestView> requests;
+				for (const RailMass::Entity machine : attached.upstream)
+				{
+					if (!RailMass::ReadRequests(machine, requests))
+						continue;
+					for (const RailMass::RequestView& request : requests)
+					{
+						const std::string unique = Fields::UniqueNameOf(request.wanted);
+						if (!request.store || !carried.count(unique) || taken.count(unique))
+							continue;
+						for (const RailMass::Delivery& delivery : request.deliveries)
+						{
+							if (!delivery.destination)
+								continue;
+							auto kind = isStorage.find(delivery.destination);
+							if (kind == isStorage.end())
+							{
+								RailNetwork::NodeView view;
+								kind = isStorage.emplace(delivery.destination,
+									RailMass::ReadNode(delivery.destination, view) && view.kind == RailNetwork::NodeKind::Storage).first;
+							}
+							RailNetwork::FlowPart part{ delivery.destination, unique, false };
+							part.name    = nameOf(delivery.destination);
+							part.storage = kind->second;
+							out.parts.push_back(std::move(part));
+						}
+					}
+				}
+			}
 			return true;
 		}
 
@@ -510,7 +645,7 @@ namespace Waila
 					RailMass::ReadCapacity(entity, g_cache.capacity);
 			}
 
-			if ((!fromMass || g_cache.parts.empty()) && Features::ShowDroneRails())
+			if (!fromMass && Features::ShowDroneRails())
 			{
 				UWorld* world = PluginSdkRuntime::GetWorld();
 				RailNetwork::Scene scene;
@@ -536,21 +671,13 @@ namespace Waila
 			g_cache.flows = RailNetwork::SumFlows(g_cache.parts, g_cache.capacity);
 		}
 
-		// One row per item made, each with its From/To lines (from the same
-		// parts) and its stock, then the items only the storage upstream holds.
-		std::unordered_set<std::string> made;
+		// One row per item on the rail: its totals, the kinds of building making
+		// and taking it, and its stock.
+		std::unordered_set<std::string> onRail;
 		for (const RailNetwork::ItemFlow& flow : g_cache.flows)
-			made.insert(flow.item);
-		const std::vector<RailNetwork::EndRow> ends = fromMass ? RailNetwork::GroupEnds(g_cache.parts, made)
+			onRail.insert(flow.item);
+		const std::vector<RailNetwork::EndRow> ends = fromMass ? RailNetwork::GroupEnds(g_cache.parts, onRail)
 		                                                       : std::vector<RailNetwork::EndRow>{};
-		auto addStock = [](const std::string& item, RailRateEntry& entry)
-		{
-			const auto held = g_cache.stock.find(item);
-			if (held == g_cache.stock.end())
-				return;
-			entry.stored   = held->second.count;
-			entry.storages = held->second.storages;
-		};
 		for (const RailNetwork::ItemFlow& flow : g_cache.flows)
 		{
 			RailRateEntry entry;
@@ -558,39 +685,34 @@ namespace Waila
 			entry.perMinMin = flow.min;
 			entry.perMinNow = flow.now;
 			DescribeItem(flow.item, entry.displayName, entry.itemData);
+
+			std::vector<RailNetwork::EndRow> fromRows, toRows;
 			for (const RailNetwork::EndRow& end : ends)
 			{
 				if (end.item != flow.item)
 					continue;
-				RailPeerEntry peer;
-				peer.source       = end.source;
-				peer.buildingName = end.name.empty() ? kUnknownBuilding : end.name;
-				peer.count        = end.count;
-				peer.perMinFull   = end.full;
-				peer.perMinNow    = end.now;
-				peer.itemData     = entry.itemData;
+				(end.source ? fromRows : toRows).push_back(end);
 				(end.source ? outInfo.fromCount : outInfo.destCount) += end.count;
-				entry.peers.push_back(std::move(peer));
 			}
-			addStock(flow.item, entry);
+			entry.from = RailNetwork::EndsLine(fromRows);
+			entry.to   = RailNetwork::EndsLine(toRows);
+
+			const auto held = g_cache.stock.find(flow.item);
+			if (held != g_cache.stock.end())
+			{
+				entry.stored   = held->second.count;
+				entry.storedIn = StorageLabel(held->second.storages);
+			}
 			outInfo.rates.push_back(std::move(entry));
 			outInfo.sourceCount += flow.sources;
-		}
-		for (const std::string& item : g_cache.stockOrder)
-		{
-			if (made.count(item))
-				continue;
-			RailRateEntry entry;
-			entry.made = false;
-			DescribeItem(item, entry.displayName, entry.itemData);
-			addStock(item, entry);
-			outInfo.rates.push_back(std::move(entry));
 		}
 		outInfo.truncated = g_cache.truncated;
 		outInfo.fromMass  = fromMass;
 
 		if (outInfo.rates.empty() && fromMass)
-			outInfo.note = g_cache.found ? "No machines attached" : "Rail data not available";
+			outInfo.note = !g_cache.found ? "Rail data not available"
+			             : !g_cache.linked ? "Nothing connected"
+			             : "Nothing upstream makes or stores items for this rail";
 
 		return true;
 	}

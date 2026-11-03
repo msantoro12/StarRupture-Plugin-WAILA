@@ -41,17 +41,12 @@ namespace Waila::UI
 		Health      tone = Health::Idle;
 	};
 
-	// One item a drone rail's sources make, with the three potentials per minute
-	// of the stretch under the cursor: min, now and max. Any figure reads "?"
-	// when it could not be worked out.
+	// One line of a drone rail's card: an item's name with its icon, or a line
+	// under it (where it comes from and goes, what is stored, its totals).
 	struct RateRow
 	{
 		PluginTextureHandle icon = nullptr;
 		std::string         name;
-		std::string         min;
-		std::string         now;
-		std::string         max;
-		Health              tone = Health::Idle;
 	};
 
 	// Everything the card needs for one frame, with every engine pointer already

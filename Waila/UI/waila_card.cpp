@@ -49,11 +49,10 @@ namespace Waila::UI
 		constexpr float  kStockTileMin = 32.0f;
 		constexpr float  kStockTileMax = kStatRingD;
 
-		// Rate body: one line per item, an icon, its name, then two figure columns.
+		// Rate body: a line of text each, the item's lines under its icon and name.
 		constexpr float kRateRowH   = 26.0f;
 		constexpr float kRateIcon   = 22.0f;
 		constexpr float kRateGap    = 10.0f;
-		constexpr float kRateColGap = 16.0f;
 
 		constexpr float kDescLineH  = 17.0f;
 		constexpr int   kDescMaxLines = 3;
@@ -280,28 +279,14 @@ namespace Waila::UI
 			return w;
 		}
 
-		// The three figure columns are as wide as the longest figure in each.
-		struct RateMetrics
+		float RateNameWidth(const CardModel& m)
 		{
-			float nameW = 0.0f;
-			float minW  = 0.0f;
-			float nowW  = 0.0f;
-			float maxW  = 0.0f;
-		};
-
-		RateMetrics MeasureRates(const CardModel& m)
-		{
-			RateMetrics r{};
-			for (const auto& row : m.rates)
-			{
-				r.nameW = (std::max)(r.nameW, EstimateW(row.name, kFontLabel));
-				r.minW  = (std::max)(r.minW,  EstimateW(row.min,  kFontLabel));
-				r.nowW  = (std::max)(r.nowW,  EstimateW(row.now,  kFontLabel));
-				r.maxW  = (std::max)(r.maxW,  EstimateW(row.max,  kFontLabel));
-			}
 			if (m.rates.empty())
-				r.nameW = EstimateW(m.ratesNote, kFontLabel);
-			return r;
+				return EstimateW(m.ratesNote, kFontLabel);
+			float w = 0.0f;
+			for (const auto& row : m.rates)
+				w = (std::max)(w, EstimateW(row.name, kFontLabel));
+			return w;
 		}
 
 		float RateBodyHeight(const CardModel& m)
@@ -311,10 +296,8 @@ namespace Waila::UI
 
 		float RateBodyWidth(const CardModel& m)
 		{
-			const RateMetrics r = MeasureRates(m);
-			if (m.rates.empty())
-				return r.nameW;
-			return kRateIcon + kRateGap + r.nameW + kRateColGap + r.minW + kRateColGap + r.nowW + kRateColGap + r.maxW;
+			const float nameW = RateNameWidth(m);
+			return m.rates.empty() ? nameW : kRateIcon + kRateGap + nameW;
 		}
 
 		// A card narrower than its own title is worse than a card with air in it.
@@ -696,12 +679,7 @@ namespace Waila::UI
 				return;
 			}
 
-			// Figures right-align to the card edge, "max" outermost, then "now", "min".
-			const RateMetrics rm = MeasureRates(m);
-			const float maxRight = right;
-			const float nowRight = right - (rm.maxW + kRateColGap) * s;
-			const float minRight = nowRight - (rm.nowW + kRateColGap) * s;
-			const float nameMaxW = minRight - (rm.minW + kRateColGap) * s - (left + (kRateIcon + kRateGap) * s);
+			const float nameMaxW = right - (left + (kRateIcon + kRateGap) * s);
 
 			for (size_t i = 0; i < m.rates.size(); ++i)
 			{
@@ -716,11 +694,6 @@ namespace Waila::UI
 
 				Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s, textY, nameMaxW,
 					row.name.c_str(), pal.textPrimary, kFontLabel * s);
-
-				const Color nowColor = row.tone == Health::Idle ? pal.textPrimary : Theme::Of(pal, row.tone);
-				Draw::TextRight(ui, dl, minRight, textY, row.min.c_str(), pal.textMuted, kFontLabel * s);
-				Draw::TextRight(ui, dl, nowRight, textY, row.now.c_str(), nowColor, kFontLabel * s);
-				Draw::TextRight(ui, dl, maxRight, textY, row.max.c_str(), pal.textMuted, kFontLabel * s);
 			}
 		}
 	}

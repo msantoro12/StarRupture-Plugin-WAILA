@@ -602,25 +602,31 @@ namespace Waila::RailNetwork
 	struct Attached
 	{
 		std::vector<uint64_t> upstream;     // machines whose output can reach the rail
-		std::vector<uint64_t> downstream;   // machines the upstream machines can feed
+		std::vector<uint64_t> downstream;   // machines the rail's items can reach
 		std::vector<uint64_t> upstreamStorage;     // storage walked through upstream: its stock can leave on the rail
 		std::vector<uint64_t> downstreamStorage;   // storage walked through downstream
+		// The storage an upstream machine's items reach the rail through: the
+		// first one the walk passed on its way back to the machine. Missing for
+		// a machine the walk reached without passing storage.
+		std::unordered_map<uint64_t, uint64_t> upstreamVia;
 		bool                  truncated = false;
 	};
 
-	// The machines attached to a rail whose items leave the nodes in `from`
-	// (its start, and its end too when it runs both ways). Upstream walks back
-	// against the flow from those nodes; downstream walks on from them and
-	// from every upstream machine, so it also finds the machines on branches
-	// before the rail. Pass-through nodes and storage are walked through,
-	// machines end a walk. At a node with paired sockets the walk stays on the
-	// track it came by: `rail` names the rail the walk starts from (0 follows
-	// every rail at the nodes in `from`). `read(node, NodeView&)` returns false
-	// for a node it cannot read. At most maxNodes nodes are read and
-	// maxMachines machines kept each way; truncated is set when either bites.
+	// The machines attached to a rail: `from` are the nodes its items leave
+	// (its start, and its end too when it runs both ways), `to` the nodes they
+	// arrive at (its end, and its start too when it runs both ways). Upstream
+	// walks back against the flow from `from`; downstream walks on from `to`
+	// only, so the machines on branches before the rail are not counted.
+	// Pass-through nodes and storage are walked through in both directions, so
+	// the machines behind a depot are found; a machine ends a walk. At a node
+	// with paired sockets the walk stays on the track it came by: `rail` names
+	// the rail the walk starts from (0 follows every rail at the seed nodes).
+	// `read(node, NodeView&)` returns false for a node it cannot read. At most
+	// maxNodes nodes are read and maxMachines machines kept each way;
+	// truncated is set when either bites.
 	template <class Read>
-	Attached FindAttached(const std::vector<uint64_t>& from, Read&& read, size_t maxNodes, size_t maxMachines,
-	                      uint64_t rail = 0)
+	Attached FindAttached(const std::vector<uint64_t>& from, const std::vector<uint64_t>& to, Read&& read,
+	                      size_t maxNodes, size_t maxMachines, uint64_t rail = 0)
 	{
 		Attached out;
 		std::unordered_map<uint64_t, NodeView> views;
@@ -643,15 +649,15 @@ namespace Waila::RailNetwork
 		// A node to walk from, and the rail the walk reached it by (0 for none).
 		using Step = std::pair<uint64_t, uint64_t>;
 
-		// An upstream seed that is a machine is kept, every other seed expanded.
-		// Every machine reached through a link is kept and not walked past, a
-		// seed included: a machine can take from the network and feed it too.
+		// A seed that is a machine is kept, every other seed expanded. Every
+		// machine reached through a link is kept and not walked past.
 		auto walk = [&](const std::vector<Step>& seeds, bool upstream, std::vector<uint64_t>& machines,
 		                std::vector<uint64_t>& storage)
 		{
 			std::set<Step> reached;    // a node, and the rail it was reached by
 			std::set<Step> expanded;   // a node, and the track it was walked from
 			std::vector<Step> queue;
+			std::unordered_map<uint64_t, uint64_t> via;   // a node, and the storage it was first reached through
 			auto keep = [&](uint64_t machine)
 			{
 				if (std::find(machines.begin(), machines.end(), machine) != machines.end())
@@ -662,6 +668,9 @@ namespace Waila::RailNetwork
 					return false;
 				}
 				machines.push_back(machine);
+				const auto through = via.find(machine);
+				if (upstream && through != via.end() && through->second)
+					out.upstreamVia.emplace(machine, through->second);
 				return true;
 			};
 			auto expand = [&](const Step& at, const NodeView& v)
@@ -680,17 +689,25 @@ namespace Waila::RailNetwork
 					return;
 				if (v.kind == NodeKind::Storage && std::find(storage.begin(), storage.end(), at.first) == storage.end())
 					storage.push_back(at.first);
+				uint64_t passed = 0;
+				if (v.kind == NodeKind::Storage)
+					passed = at.first;
+				else if (const auto through = via.find(at.first); through != via.end())
+					passed = through->second;
 				for (const NodeLink& link : v.links)
 					if ((!track || link.track == track) && (upstream ? link.in : link.out) && link.other
 						&& reached.insert({ link.other, link.rail }).second)
+					{
 						queue.push_back({ link.other, link.rail });
+						via.emplace(link.other, passed);
+					}
 			};
 			for (const Step& seed : seeds)
 			{
 				const NodeView* v = view(seed.first);
 				if (!v)
 					continue;
-				if (v->kind == NodeKind::Machine && upstream)
+				if (v->kind == NodeKind::Machine)
 				{
 					if (!keep(seed.first))
 						return;
@@ -714,13 +731,13 @@ namespace Waila::RailNetwork
 			}
 		};
 
-		std::vector<Step> seeds;
+		std::vector<Step> back, ahead;
 		for (uint64_t node : from)
-			seeds.push_back({ node, rail });
-		walk(seeds, true, out.upstream, out.upstreamStorage);
-		for (uint64_t machine : out.upstream)
-			seeds.push_back({ machine, 0 });
-		walk(seeds, false, out.downstream, out.downstreamStorage);
+			back.push_back({ node, rail });
+		for (uint64_t node : to)
+			ahead.push_back({ node, rail });
+		walk(back, true, out.upstream, out.upstreamStorage);
+		walk(ahead, false, out.downstream, out.downstreamStorage);
 		return out;
 	}
 
@@ -737,6 +754,8 @@ namespace Waila::RailNetwork
 		float       now       = -1.0f;  // right now: a source's output (0 while stalled), a consumer's intake
 		                                // while it has a request open for the item (else 0); negative when unread
 		std::string name;               // the building's name, which the From/To lines group by
+		bool        storage = false;    // storage: it holds the item, it neither makes nor takes it
+		std::string via;                // a source: the name of the storage its items reach the rail through
 	};
 
 	// The totals of one item, items a minute; negative when unknown.
@@ -756,7 +775,8 @@ namespace Waila::RailNetwork
 	// unread, which leaves the figures uncapped). Each figure is floored at 0
 	// and capped by the capacity. A source whose rate is unread leaves the
 	// item's figures unknown; a consumer whose intake or request is unread
-	// leaves min or now unknown.
+	// leaves min or now unknown. Storage holding the item is a source that
+	// makes nothing: an item only storage holds has all three figures 0.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
 		struct Sum
@@ -767,6 +787,7 @@ namespace Waila::RailNetwork
 			bool     nowKnown    = true;
 			float    takeFull = 0.0f;
 			float    takeNow  = 0.0f;
+			bool     held     = false;   // storage holds it
 			std::unordered_set<uint64_t> from, to;
 		};
 
@@ -782,6 +803,12 @@ namespace Waila::RailNetwork
 				sums.back().flow.item = part.item;
 			}
 			Sum& sum = sums[found->second];
+
+			if (part.storage)
+			{
+				sum.held = sum.held || part.source;
+				continue;
+			}
 
 			if (!(part.source ? sum.from : sum.to).insert(part.building).second)
 				continue;
@@ -813,8 +840,8 @@ namespace Waila::RailNetwork
 		std::vector<ItemFlow> flows;
 		for (Sum& sum : sums)
 		{
-			// An item nothing attached makes is not on the card.
-			if (sum.from.empty())
+			// An item nothing attached makes or holds is not on the card.
+			if (sum.from.empty() && !sum.held)
 				continue;
 
 			ItemFlow& flow = sum.flow;
@@ -836,53 +863,83 @@ namespace Waila::RailNetwork
 		return flows;
 	}
 
-	// One From/To line under the totals: the buildings of one name at one end
-	// making or taking one item, from the same parts the totals are summed
-	// from, each building once. Rates are summed over the buildings whose rate
-	// is known; negative when none is.
+	// The buildings of one kind (one name, reached the same way) at one end of
+	// the rail making or taking one item, from the same parts the totals are
+	// summed from, each building once.
 	struct EndRow
 	{
 		bool        source = false;
 		std::string name;
 		std::string item;
+		std::string via;       // a source: the storage its items reach the rail through
 		int32_t     count = 0;
-		float       full  = -1.0f;
-		float       now   = -1.0f;
 	};
 
-	// Sources first, each line in the order its first building was seen. Only
-	// items in `items` get a line: a consumer's other ingredients are not on
-	// this rail.
+	// Sources first, the most buildings of an item's end first, otherwise in the
+	// order a kind was first seen. Only items in `items` get a row: a consumer's
+	// other ingredients are not on this rail. Storage is neither a maker nor a
+	// taker: it is listed at an end only when no building makes (or takes) the
+	// item there.
 	inline std::vector<EndRow> GroupEnds(const std::vector<FlowPart>& parts, const std::unordered_set<std::string>& items)
 	{
+		std::unordered_set<std::string> made, taken;   // items some building makes, takes
+		for (const FlowPart& part : parts)
+		{
+			if (!part.storage)
+				(part.source ? made : taken).insert(part.item);
+		}
+
 		std::vector<EndRow> rows;
 		std::unordered_set<std::string> seen;   // end, item and building
 		for (const FlowPart& part : parts)
 		{
 			if (!items.count(part.item))
 				continue;
+			if (part.storage && (part.source ? made : taken).count(part.item))
+				continue;
 			if (!seen.insert(std::string(part.source ? "from|" : "to|") + part.item + "|" + std::to_string(part.building)).second)
 				continue;
 
+			const std::string& via = part.source ? part.via : std::string();
 			auto row = std::find_if(rows.begin(), rows.end(), [&](const EndRow& r)
-				{ return r.source == part.source && r.item == part.item && r.name == part.name; });
+				{ return r.source == part.source && r.item == part.item && r.name == part.name && r.via == via; });
 			if (row == rows.end())
 			{
 				EndRow added;
 				added.source = part.source;
 				added.name   = part.name;
 				added.item   = part.item;
+				added.via    = via;
 				rows.push_back(std::move(added));
 				row = rows.end() - 1;
 			}
 			++row->count;
-			if (part.full >= 0.0f)
-				row->full = (std::max)(row->full, 0.0f) + part.full;
-			if (part.now >= 0.0f)
-				row->now = (std::max)(row->now, 0.0f) + part.now;
 		}
-		std::stable_partition(rows.begin(), rows.end(), [](const EndRow& r) { return r.source; });
+		std::stable_sort(rows.begin(), rows.end(), [](const EndRow& a, const EndRow& b)
+			{ return a.source != b.source ? a.source : a.count > b.count; });
 		return rows;
+	}
+
+	// One end of an item as a line, names only: "2x Furnace, Furnace v.2", with
+	// "via <storage>" after a kind reached through storage. At most `maxKinds`
+	// kinds are named, then "+N more". `rows` are those of one item and end,
+	// largest first (GroupEnds). Empty when there are none.
+	inline std::string EndsLine(const std::vector<EndRow>& rows, size_t maxKinds = 3)
+	{
+		std::string line;
+		for (size_t i = 0; i < rows.size() && i < maxKinds; ++i)
+		{
+			if (i)
+				line += ", ";
+			if (rows[i].count > 1)
+				line += std::to_string(rows[i].count) + "x ";
+			line += rows[i].name;
+			if (!rows[i].via.empty())
+				line += " via " + rows[i].via;
+		}
+		if (rows.size() > maxKinds)
+			line += ", +" + std::to_string(rows.size() - maxKinds) + " more";
+		return line;
 	}
 
 }

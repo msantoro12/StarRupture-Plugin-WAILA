@@ -1,24 +1,22 @@
-A rail card keeps each item's rows together: its totals, the machines making and taking it, then what the storage on the network holds of it ("4.0k in storage", or "12k in 3 storages"). Storage stays out of the rates
-An item only held in storage before the rail gets a row of its own with its stock ("Copper Coil: 4.0k in storage"), so a rail out of a depot shows what it can carry
+A rail card now shows, per item, the item, "From" and "To" lines naming the buildings making and taking it (no numbers; buildings of one kind together, "From 2x Fabricator v.2, Furnace", at most three kinds then "+N more"), a "Stored 4.0k in Storage Depot v.2" line when storage on the network holds it, and one totals line: "min A · max B · current C /min". The per-row rates are gone
+A rail walks past storage both ways: the machines behind a depot are makers ("From 4x Assembler via Storage Depot v.2"), the machines taking from it are users, and chains of depots pass through. An item only a depot holds reads "From Storage Depot v.2" with its stock and totals of 0
+A rail's users are the machines after its end only; a machine taking off the line before the rail no longer counts against it, and min stays at or above 0
+When the walk finds no maker or user for an item, the game's own delivery requests supply the source or destination, so the item still shows
+A rail with no building linked reads "Nothing connected"
 A rail on a drone lane's track lists only that track's machines; the lane's other tracks no longer mix in
 A rail card now shows what the machines attached to the rail's network can make, read from the game's own data, so it works with nothing moving and along the whole line, loaded or not: max is the makers' output with nobody pulling, min what is left with every machine using the item running full out, and now what is left with only the machines asking for it right now, all capped at what the rail carries
-The From and To rows name every machine making or taking the item, however far along the line, with its rate running full out under max and right now under now
-Storage and stations on a rail's network pass items along and never count as makers
 A machine card shows each ingredient and the product per minute as now / full speed, and a starved machine adds a red "short N" line for each ingredient it lacks (its whole per-minute need, since the game does not expose what is arriving). Figures no longer overlap at any ingredient count
 A machine card's output per minute now uses the machine's live speed, the same as the ingredient rows, so the two always agree at any speed
 A running machine card shows over each ingredient tile how many it takes in per minute at the machine's speed (a stalled machine reads 0)
 Drone rails show the crafters that feed them, one row per item, as three potentials in items per minute: max (the sources' output, capped at what the rail can carry at its drone speed and spacing), min (what is left if every machine taking the item off the line ahead runs full out) and now (what is left given the machines asking for it right now)
 A stretch right after a machine's input shows less than the stretch before it. Machines are found from the rail layout, so a rail whose start is not loaded shows no machines ahead of it
 The rail's capacity is read on its own: where it cannot be read max shows ? and the rest of the row stays
-A rail card shows six rows in all
 Sources are traced back against the flow: through poles, junctions and mergers, along a lane's own track, and through storage to the crafters filling it
 Each rail on a platform shows its own sources; a factory's input rails no longer show the factory they feed
 A lane's tracks stay apart even before the lane has loaded. Buildings that have not loaded do not count
 A rail passing through a drill's frame no longer shows the drill
 Idle crafters count with the recipe they are set to
 The card follows the camera, so it works from the building drone; Max Distance counts from the drone
-A rail card lists where its items come from and go to under its item rates, including machines, storage and stations out of render range
-Buildings of one kind making or taking the same item share one From or To row, with their count and their rates added up
 Buildings out of render range are named from the game's Mass data instead of reading "Out of range"; only a building the data cannot name reads "Unknown building" (no building data for it, or the name read is off on this build)
 A crafter at an end shows what it takes for an ingredient the rail carries, as well as what it makes
 A rail's item row is one total per item, summed over every source and every machine taking it, whether found from the rail layout or from the drones on the rail (out of render range too), each building counted once; the From and To rows stay under it
