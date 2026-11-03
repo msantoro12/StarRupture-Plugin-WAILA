@@ -905,6 +905,10 @@ namespace Waila::RailNetwork
 						&& (sum.makers > 0 ? flow.max < sum.takeNow
 						                   : sum.takeNow > 0.0f && !sum.brought && sum.stock <= 0.0f);
 				}
+				// Only a receiver brings it: its rate is unknown, so the totals are
+				// too ("?"), not 0.
+				if (sum.makers == 0 && sum.brought)
+					flow.max = flow.min = flow.now = -1.0f;
 			}
 			flows.push_back(std::move(flow));
 		}

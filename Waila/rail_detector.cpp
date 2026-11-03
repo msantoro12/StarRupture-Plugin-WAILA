@@ -541,8 +541,6 @@ namespace Waila
 					RailNetwork::FlowPart part{ machine, unique, true };
 					part.name    = nameOf(machine);
 					part.unrated = true;
-					if (through != attached.upstreamVia.end())
-						part.via = nameOf(through->second);
 					out.parts.push_back(std::move(part));
 				}
 			}
