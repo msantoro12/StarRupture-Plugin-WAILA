@@ -737,9 +737,10 @@ namespace Waila::RailNetwork
 						}
 				// WAILA-RAIL-DIAG BEGIN
 				const int diagD = RailDiag::Active() ? diagDepth[at] : 0;
-				RAIL_DIAG_LINE("  [%s d%d] node %s reached by rail %s: %s, track %llu, %zu link(s)", diagDir, diagD,
+				RAIL_DIAG_LINE("  [%s d%d] node %s reached by rail %s: %s, track %llu, %zu link(s)%s", diagDir, diagD,
 					RailDiag::Id(at.first).c_str(), RailDiag::Id(at.second).c_str(), DiagKind(v.kind),
-					static_cast<unsigned long long>(track), v.links.size());
+					static_cast<unsigned long long>(track), v.links.size(),
+					v.kind == NodeKind::PassThrough && v.links.size() >= 3 ? " [splitter/merger: every branch is followed, nothing is counted for the node itself]" : "");
 				// WAILA-RAIL-DIAG END
 				if (!expanded.insert({ at.first, track }).second)
 				{
