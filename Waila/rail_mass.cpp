@@ -590,7 +590,10 @@ namespace Waila::RailMass
 				diagSelected ? "selected recipe" : recipe ? "current recipe" : "-");
 			// WAILA-RAIL-DIAG END
 			out.speed   = ReadAt<float>(fragment, mCraftingSpeed.Offset());
-			out.stalled = ReadAt<bool>(fragment, mMissingItems.Offset()) || ReadAt<bool>(fragment, mOutputFull.Offset());
+			const bool missing    = ReadAt<bool>(fragment, mMissingItems.Offset());
+			const bool outputFull = ReadAt<bool>(fragment, mOutputFull.Offset());
+			out.stalled = missing || outputFull;
+			out.starved = missing && !outputFull;
 		}
 
 		// A built, current entity's const shared fragment, or null. The address

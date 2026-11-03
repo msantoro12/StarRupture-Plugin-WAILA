@@ -365,9 +365,18 @@ namespace
 
 	bool Near(float a, float b) { return std::fabs(a - b) < 0.001f; }
 
+	// A maker running: it puts out its full rate now.
 	FlowPart Maker(uint64_t building, const std::string& item, float full)
 	{
-		return { building, item, true, full };
+		FlowPart part{ building, item, true, full };
+		part.now = full;
+		return part;
+	}
+
+	FlowPart Stalled(FlowPart part)
+	{
+		part.now = 0.0f;
+		return part;
 	}
 
 	FlowPart Taker(uint64_t building, const std::string& item, float full)
@@ -433,6 +442,37 @@ namespace
 
 		flows = SumFlows({ Maker(1, "A", 60) }, -1.0f);
 		Check(Near(flows[0].max, 60) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "no capacity: uncapped");
+	}
+
+	// A stalled maker (output full, or short of input) puts nothing on the rail
+	// now: max and min still count it, now does not.
+	void TestFlowsStalledSource()
+	{
+		std::vector<ItemFlow> flows = SumFlows({ Stalled(Maker(1, "A", 240)), Stalled(Maker(2, "A", 240)),
+			Requesting(Taker(3, "A", 60), false) }, 480.0f);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 420), "stalled makers still count in max and min");
+		Check(Near(flows[0].now, 0), "makers all stalled: nothing now");
+
+		flows = SumFlows({ Maker(1, "A", 240), Stalled(Maker(2, "A", 240)), Requesting(Taker(3, "A", 60), true) }, 480.0f);
+		Check(Near(flows[0].now, 180), "one of two running: 240 - 60 requesting");
+	}
+
+	// short_: the consumers requesting right now want more than max, before the
+	// floor at 0; a rail nobody requests from, or one that covers them, is not.
+	void TestFlowsShort()
+	{
+		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 480), Requesting(Taker(2, "A", 300), true),
+			Requesting(Taker(3, "A", 300), true), Requesting(Taker(4, "A", 300), false) }, 480.0f);
+		Check(flows[0].short_ && Near(flows[0].now, 0), "600 requested of 480: short, now floored at 0");
+
+		flows = SumFlows({ Maker(1, "A", 480), Requesting(Taker(2, "A", 300), true), Requesting(Taker(3, "A", 300), false) }, 480.0f);
+		Check(!flows[0].short_, "300 requested of 480: not short");
+
+		flows = SumFlows({ Maker(1, "A", 900), Requesting(Taker(2, "A", 600), true) }, 480.0f);
+		Check(flows[0].short_, "600 requested of a rail that carries 480: short");
+
+		flows = SumFlows({ Maker(1, "A", 60), Taker(2, "A", 30) }, 480.0f);
+		Check(!flows[0].short_, "an unread request leaves it not short");
 	}
 
 	FlowPart Named(FlowPart part, const std::string& name, float now)
@@ -744,6 +784,8 @@ int main()
 	TestPlatform(dir);
 	TestFlowsOneRowPerItem();
 	TestFlowsLimits();
+	TestFlowsStalledSource();
+	TestFlowsShort();
 	TestEndLines();
 	TestAttachedLongLine();
 	TestAttachedEdges();

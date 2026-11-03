@@ -53,6 +53,10 @@ namespace Waila::UI
 		constexpr float kRateRowH   = 26.0f;
 		constexpr float kRateIcon   = 22.0f;
 		constexpr float kRateGap    = 10.0f;
+		constexpr float kRateContH  = 17.0f;   // a wrapped line's continuation
+		constexpr float kRateIndent = 12.0f;   // and how far it is indented
+		constexpr int   kRateMaxLines = 3;
+		constexpr float kRateChar   = 0.62f;   // width of a character, in ems, as the title is estimated
 
 		constexpr float kDescLineH  = 17.0f;
 		constexpr int   kDescMaxLines = 3;
@@ -290,13 +294,8 @@ namespace Waila::UI
 				return EstimateW(m.ratesNote, kFontLabel);
 			float w = 0.0f;
 			for (const auto& row : m.rates)
-				w = (std::max)(w, EstimateW(row.name, kFontLabel));
+				w = (std::max)(w, EstimateW(row.name, kFontLabel, kRateChar));
 			return w;
-		}
-
-		float RateBodyHeight(const CardModel& m)
-		{
-			return static_cast<float>((std::max)(m.rates.size(), size_t(1))) * kRateRowH + 6.0f;
 		}
 
 		float RateBodyWidth(const CardModel& m)
@@ -309,6 +308,9 @@ namespace Waila::UI
 		float HeaderWidth(const CardModel& m)
 		{
 			float w = EstimateW(m.title, kFontTitle, 0.62f);
+
+			if (!m.titleNote.empty())
+				w += EstimateW(m.titleNote, kFontStatus) + 8.0f;
 
 			if (!m.chip.empty())
 				w += EstimateW(m.chip, kFontChip) + kFontChip * 0.9f + 8.0f;
@@ -323,17 +325,18 @@ namespace Waila::UI
 		// the game thread where there is no ImGui context, and both sides have to
 		// agree on the line count or the card is sized for text it doesn't draw.
 		int WrapDescription(const std::string& desc, float widthPoints,
-		                    std::vector<std::string>* outLines)
+		                    std::vector<std::string>* outLines, float font = kFontTiny,
+		                    float perChar = 0.5f, int maxLines = kDescMaxLines)
 		{
 			if (desc.empty())
 				return 0;
 
 			// ~0.5em per character is close enough for a proportional face at this size.
-			const int perLine = (std::max)(12, static_cast<int>(widthPoints / (kFontTiny * 0.5f)));
+			const int perLine = (std::max)(12, static_cast<int>(widthPoints / (font * perChar)));
 
 			int    lines = 0;
 			size_t pos   = 0;
-			while (pos < desc.size() && lines < kDescMaxLines)
+			while (pos < desc.size() && lines < maxLines)
 			{
 				size_t end = pos + static_cast<size_t>(perLine);
 				if (end >= desc.size())
@@ -360,6 +363,28 @@ namespace Waila::UI
 			return lines;
 		}
 
+		// The lines a rate row is drawn on: one, or for a row that wraps, as many
+		// as it takes at the card's width, the continuations indented.
+		std::vector<std::string> RowLines(const RateRow& row, float cardW)
+		{
+			if (!row.wrap)
+				return { row.name };
+			std::vector<std::string> lines;
+			WrapDescription(row.name, cardW - kPadX * 2.0f - kRateIcon - kRateGap - kRateIndent, &lines,
+				kFontLabel, kRateChar, kRateMaxLines);
+			if (lines.empty())
+				lines.push_back(row.name);
+			return lines;
+		}
+
+		float RateBodyHeight(const CardModel& m, float cardW)
+		{
+			float h = 0.0f;
+			for (const auto& row : m.rates)
+				h += kRateRowH + static_cast<float>(RowLines(row, cardW).size() - 1) * kRateContH;
+			return (std::max)(h, kRateRowH) + 6.0f;
+		}
+
 		bool HasFooter(const CardModel& m)
 		{
 			return !m.footLeft.empty() || !m.footRight.empty();
@@ -382,7 +407,7 @@ namespace Waila::UI
 
 		float h = kStrip + kHeaderH;
 
-		h += model.hasFlow ? f.bodyH : model.hasRates ? RateBodyHeight(model) : StatBodyHeight(model);
+		h += model.hasFlow ? f.bodyH : model.hasRates ? RateBodyHeight(model, baseW) : StatBodyHeight(model);
 
 		if (HasFooter(model))
 			h += kFooterH;
@@ -441,8 +466,17 @@ namespace Waila::UI
 				x += 8.0f * s;
 			}
 
-			Draw::TextFitted(ui, dl, x, y, (std::max)(0.0f, rightEdge - x),
+			const float titleMax = (std::max)(0.0f, rightEdge - x);
+			Draw::TextFitted(ui, dl, x, y, titleMax,
 				m.title.c_str(), pal.textPrimary, kFontTitle * s);
+
+			// A note follows the title, in the room the title leaves.
+			if (!m.titleNote.empty())
+			{
+				const float noteX = x + (std::min)(Draw::TextWidth(ui, m.title.c_str(), kFontTitle * s), titleMax) + 8.0f * s;
+				Draw::TextFitted(ui, dl, noteX, y + 4.0f * s, (std::max)(0.0f, rightEdge - noteX),
+					m.titleNote.c_str(), pal.textMuted, kFontStatus * s);
+			}
 
 			outBodyTop = top + kHeaderH * s;
 		}
@@ -685,10 +719,9 @@ namespace Waila::UI
 
 			const float nameMaxW = right - (left + (kRateIcon + kRateGap) * s);
 
-			for (size_t i = 0; i < m.rates.size(); ++i)
+			float y = bodyTop;
+			for (const RateRow& row : m.rates)
 			{
-				const RateRow& row = m.rates[i];
-				const float y    = bodyTop + kRateRowH * s * static_cast<float>(i);
 				const float midY = y + kRateRowH * 0.5f * s;
 				const float textY = midY - kFontLabel * 0.5f * s;
 
@@ -696,8 +729,15 @@ namespace Waila::UI
 				                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
 					row.icon, pal, 1.0f);
 
-				Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s, textY, nameMaxW,
-					row.name.c_str(), pal.textPrimary, kFontLabel * s);
+				const std::vector<std::string> lines = RowLines(row, (r.x1 - r.x0) / s);
+				for (size_t k = 0; k < lines.size(); ++k)
+				{
+					const float indent = k ? kRateIndent * s : 0.0f;
+					Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s + indent,
+						textY + kRateContH * s * static_cast<float>(k), nameMaxW - indent,
+						lines[k].c_str(), pal.textPrimary, kFontLabel * s);
+				}
+				y += (kRateRowH + kRateContH * static_cast<float>(lines.size() - 1)) * s;
 			}
 		}
 	}
@@ -723,7 +763,7 @@ namespace Waila::UI
 		else if (model.hasRates)
 		{
 			DrawRateBody(ui, dl, model, pal, s, rect, bodyTop);
-			bodyTop += RateBodyHeight(model) * s;
+			bodyTop += RateBodyHeight(model, (rect.x1 - rect.x0) / s) * s;
 		}
 		else
 		{

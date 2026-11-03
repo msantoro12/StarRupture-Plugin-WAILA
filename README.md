@@ -13,9 +13,28 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
-  - **Drone Rails** — what the machines attached to a rail's network can make, read from the game's drone logistics, so it works with nothing moving and along the whole line, out of render range too. WAILA follows the rails back from the one you point at, through poles, junctions, storage and stations, to the machines feeding it, then on from the rail's end to every machine taking the items. Each item shows its icon and name, then up to four lines: "From" and "To" name the buildings making and taking it, no numbers, buildings of one kind together with their count, the biggest kind first ("From 2x Fabricator v.2, Furnace"; at most three kinds, then "+N more"); "Stored 4.0k in Storage Depot v.2" is what the storage on the network holds of it; and a totals line, "min A · max B · current C /min", in items per minute. Max is what its makers put out with nobody pulling, min what is left with every machine that uses it after the rail running full out, and current what is left with only the machines asking for it right now; all are capped at what the rail itself can carry from its drone speed and spacing, and none goes below 0. Storage never counts as a maker or a user: WAILA walks past it both ways, so a machine filling a depot reads "From 4x Assembler via Storage Depot v.2" and the machines taking from a depot are listed as users, a chain of depots included. An item only a depot holds reads "From Storage Depot v.2" with its stock and totals of 0. When the walk finds no maker or user for an item, the game's own delivery requests supply the source or destination. Far machines carry their real name; one the data cannot name reads "Unknown building". On a drone lane, each track keeps to its own machines. A card shows up to twelve lines. A rail with nothing linked reads "Nothing connected", and "Rail data not available" when WAILA cannot read the rail's network on this game build
+  - **Drone Rails** — what the machines attached to a rail's network make and take, read from the game's drone logistics, so it works with nothing moving and along the whole line, out of render range too. See [Rail card](#rail-card)
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
+
+## Rail card
+
+Aim at a drone rail and the card shows what travels along it, item by item. WAILA follows the rails back from the one you point at, through poles, junctions, mergers, storage and stations, to the machines feeding it, then on from the rail's end to every machine taking the items.
+
+**Header.** The rail's name and what it carries per minute ("Rail v.3  480/min"), then a dot and "From 20 to 4": how many buildings make the items on it and how many take them. The dot is:
+- **green** when all is good: the machines asking for an item right now want no more than the rail can bring;
+- **yellow** when they want more than the rail can bring (a bottleneck);
+- **red** when a machine feeding the rail is starved, short of an input;
+- **grey** when there is nothing to judge, for example nothing takes from the rail.
+
+**Each item** shows its icon and name, then:
+- **From** and **To**: the buildings making and taking it, buildings of one kind together with their count, the biggest kind first ("From 2x Fabricator v.2, Furnace"; at most three kinds, then "+N more"). A long line continues on the next one. A machine filling a depot reads "From 4x Assembler via Storage Depot v.2", and machines taking from a depot are listed as takers. An item only a depot holds reads "From Storage Depot v.2";
+- **Stored**: what the storage on the network holds of it ("Stored 18.6k in 3x Storage Depot v.2");
+- **min · max · current** per minute. Max is what its makers put out with nobody pulling, min what is left with every machine that uses it running full out, and current what is left right now: what the makers are putting out (a stalled maker puts out nothing) less what the machines asking for it right now take. All are capped at what the rail itself carries and none goes below 0.
+
+**Using it.** Aim at a rail you suspect is a bottleneck. A yellow dot says the takers want more than the rail brings: add a maker or a second rail. A red dot says a feeder is starved: follow the rail back to the makers in "From" and aim at one to see which ingredient it is short of. A "current" of 0 with a long "To" line means the takers use everything the rail brings.
+
+A card shows up to twelve lines. A rail with nothing linked reads "Nothing connected", and "Rail data not available" when WAILA cannot read the rail's network on this game build.
 
 ## Requirements
 

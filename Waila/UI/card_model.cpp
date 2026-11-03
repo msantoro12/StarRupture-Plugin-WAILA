@@ -14,6 +14,7 @@
 #include "rail_diag.h"
 // WAILA-RAIL-DIAG END
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -69,8 +70,7 @@ namespace Waila::UI
 		std::string NumCompact(int32_t v)
 		{
 			char buf[24];
-			if (v >= 100000)     snprintf(buf, sizeof(buf), "%dk", v / 1000);
-			else if (v >= 10000) snprintf(buf, sizeof(buf), "%.0fk", v / 1000.0f);
+			if (v >= 99950)      snprintf(buf, sizeof(buf), "%dk", (v + 500) / 1000);
 			else if (v >= 1000)  snprintf(buf, sizeof(buf), "%.1fk", v / 1000.0f);
 			else                 snprintf(buf, sizeof(buf), "%d", v);
 			return buf;
@@ -349,14 +349,13 @@ namespace Waila::UI
 			lines.head.icon = Icons::ForItem(r.itemData);
 			lines.head.name = r.displayName;
 			if (!r.from.empty())
-				lines.details.push_back({ nullptr, "From " + r.from });
+				lines.details.push_back({ nullptr, "From " + r.from, true });
 			if (!r.to.empty())
-				lines.details.push_back({ nullptr, "To " + r.to });
+				lines.details.push_back({ nullptr, "To " + r.to, true });
 			if (r.stored >= 0 && !r.storedIn.empty())
 			{
-				char count[24];
-				Draw::FormatNumber(count, sizeof(count), static_cast<float>(r.stored));
-				lines.details.push_back({ nullptr, std::string("Stored ") + count + " in " + r.storedIn });
+				const int32_t count = static_cast<int32_t>((std::min)(r.stored, static_cast<int64_t>(INT32_MAX)));
+				lines.details.push_back({ nullptr, "Stored " + NumCompact(count) + " in " + r.storedIn, true });
 			}
 			// "\xC2\xB7" is a middle dot.
 			lines.totals.name = "min " + PerMin(r.perMinMin) + " \xC2\xB7 max " + PerMin(r.perMinMax)
@@ -371,6 +370,12 @@ namespace Waila::UI
 
 		out.hasRates = true;
 		out.chip     = info.filterName;
+		if (info.capacity >= 0.0f)
+		{
+			char num[24];
+			Draw::FormatNumber(num, sizeof(num), info.capacity);
+			out.titleNote = std::string(num) + "/min";
+		}
 
 		// Each item's lines together. When they do not all fit, every item keeps
 		// its name and totals and the From, To and stock lines fill the room
@@ -402,8 +407,11 @@ namespace Waila::UI
 		char buf[48];
 		if (info.fromCount + info.destCount > 0)
 		{
-			snprintf(buf, sizeof(buf), "%d from, %d to%s", info.fromCount, info.destCount, info.truncated ? "+" : "");
+			snprintf(buf, sizeof(buf), "From %d to %d%s", info.fromCount, info.destCount, info.truncated ? "+" : "");
 			out.statusText = buf;
+			out.status = info.feed == Waila::RailInfo::Feed::Starved ? Health::Bad
+			           : info.feed == Waila::RailInfo::Feed::Short   ? Health::Warn
+			           : info.feed == Waila::RailInfo::Feed::Fed     ? Health::Good : Health::Idle;
 		}
 		else if (info.sourceCount > 0)
 		{

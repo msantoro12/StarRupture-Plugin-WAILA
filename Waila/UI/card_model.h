@@ -47,6 +47,7 @@ namespace Waila::UI
 	{
 		PluginTextureHandle icon = nullptr;
 		std::string         name;
+		bool                wrap = false;   // a long line continues on the next one instead of being cut
 	};
 
 	// Everything the card needs for one frame, with every engine pointer already
@@ -63,9 +64,10 @@ namespace Waila::UI
 		PluginTextureHandle buildingIcon = nullptr;
 
 		std::string title;        // building name
+		std::string titleNote;    // muted, right after the title
 		std::string chip;         // left chip — speed multiplier and the like
 		std::string statusText;   // right chip
-		Health      status = Health::Idle;
+		Health      status = Health::Idle;   // colours the right chip and its dot
 
 		float progress      = 0.0f;
 		bool  progressValid = false;
