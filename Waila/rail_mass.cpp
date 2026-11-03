@@ -708,6 +708,23 @@ namespace Waila::RailMass
 				return;
 			}
 			found = true;
+			// WAILA-RAIL-DIAG BEGIN
+			if (RailDiag::Active())
+			{
+				int32_t enabled[2] = { 0, 0 }, total[2] = { 0, 0 };
+				const size_t offsets[2] = { mInputInventory.Offset(), mMainInventory.Offset() };
+				for (int c = 0; c < 2; ++c)
+				{
+					const auto* container = reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + offsets[c]);
+					const Fields::StructArray slots(Fields::StorageItems.In(container), Fields::StorageItemSize);
+					total[c] = slots.Num();
+					for (int32_t i = 0; i < slots.Num(); ++i)
+						enabled[c] += !Fields::ValueOr<bool>(Fields::SlotDisabled, slots.At(i));
+				}
+				RAIL_DIAG_LINE("      storage %s: capacity, slots enabled/total: input container %d/%d, main container %d/%d",
+					RailDiag::Id(storage).c_str(), enabled[0], total[0], enabled[1], total[1]);
+			}
+			// WAILA-RAIL-DIAG END
 			int32_t usedSlots = 0;
 			std::vector<StoredItemEntry> main;
 			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mInputInventory.Offset()), out, usedSlots);

@@ -472,7 +472,7 @@ namespace Waila
 					RAIL_DIAG_LINE("  upstream machine %s \"%s\" SKIPPED: %s", RailDiag::Id(machine).c_str(), nameOf(machine).c_str(),
 						!crafter.isCrafter ? "no crafting data (not a crafter, or the crafter read is off/faulted; see the line above)"
 						                   : "crafter without a usable recipe");
-					RAIL_DIAG_TAIL("upstream machine %s \"%s\" gives no From part (no recipe or no crafting data): its items are not counted",
+					RAIL_DIAG_TAIL("upstream machine %s \"%s\" has no recipe or no crafting data: no maker part (a Cargo Receiver is handled separately)",
 						RailDiag::Id(machine).c_str(), nameOf(machine).c_str());
 					// WAILA-RAIL-DIAG END
 					continue;
@@ -509,9 +509,10 @@ namespace Waila
 				if (through != attached.upstreamVia.end())
 					part.via = nameOf(through->second);
 				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("  upstream machine %s \"%s\": FROM part, makes %s (%s) full=%.2f/min now=%.2f/min speed=%.2f stalled=%d%s%s",
+				RAIL_DIAG_LINE("  upstream machine %s \"%s\": FROM part, makes %s (%s) full=%.2f/min now=%.2f/min speed=%.2f stalled=%d (%s)%s%s",
 					RailDiag::Id(machine).c_str(), part.name.c_str(), unique.c_str(), Fields::DisplayNameOf(item).c_str(), part.full,
-					part.now, crafter.speed, crafter.stalled, part.via.empty() ? "" : ", reached through ", part.via.c_str());
+					part.now, crafter.speed, crafter.stalled,
+					crafter.starved ? "missing items, output not full" : crafter.stalled ? "output full" : "running", part.via.empty() ? "" : ", reached through ", part.via.c_str());
 				// WAILA-RAIL-DIAG END
 				out.parts.push_back(std::move(part));
 			}
@@ -653,6 +654,19 @@ namespace Waila
 									bring(entry.uniqueName, entry.itemData);
 				}
 
+				// WAILA-RAIL-DIAG BEGIN
+				if (RailDiag::Active())
+				{
+					std::vector<StoredItemEntry> own;
+					const bool ownRead = RailMass::ReadStored(machine, own);
+					std::string items;
+					for (const auto& b : brings)
+						items += " " + b.first;
+					RAIL_DIAG_LINE("  upstream machine %s \"%s\": CARGO RECEIVER (logistics type Producer, no recipe), own inventory %s with %zu item(s), via storage %s, brings:%s",
+						RailDiag::Id(machine).c_str(), nameOf(machine).c_str(), ownRead ? "read" : "NOT READ", own.size(),
+						through != attached.upstreamVia.end() ? RailDiag::Id(through->second).c_str() : "none", items.empty() ? " nothing" : items.c_str());
+				}
+				// WAILA-RAIL-DIAG END
 				for (const auto& [unique, item] : brings)
 				{
 					Remember(out, item, unique);
@@ -745,6 +759,10 @@ namespace Waila
 					|| std::any_of(out.parts.begin(), out.parts.end(),
 						[&](const RailNetwork::FlowPart& p) { return !p.source && p.building == machine; }))
 					continue;
+				// WAILA-RAIL-DIAG BEGIN
+				RAIL_DIAG_LINE("  downstream machine %s \"%s\": CARGO SENDER (logistics type Consumer, no recipe, no request naming a carried item): a taker of all %zu carried item(s)",
+					RailDiag::Id(machine).c_str(), nameOf(machine).c_str(), carried.size());
+				// WAILA-RAIL-DIAG END
 				for (const std::string& item : carried)
 				{
 					RailNetwork::FlowPart part{ machine, item, false };
@@ -1015,6 +1033,15 @@ namespace Waila
 		// WAILA-RAIL-DIAG BEGIN
 		if (RailDiag::Active())
 		{
+			std::string shorts;
+			for (const RailNetwork::ItemFlow& flow : g_cache.flows)
+				if (flow.short_)
+					shorts += " " + flow.item;
+			RAIL_DIAG_TAIL("dot: %s because %s", outInfo.feed == RailInfo::Feed::Starved ? "RED" : outInfo.feed == RailInfo::Feed::Short ? "YELLOW"
+				: outInfo.feed == RailInfo::Feed::Fed ? "GREEN" : "GREY",
+				outInfo.feed == RailInfo::Feed::Starved ? "a maker feeding the rail is missing items"
+				: outInfo.feed == RailInfo::Feed::Short ? ("takers requesting now are not served, for:" + shorts).c_str()
+				: outInfo.feed == RailInfo::Feed::Fed ? "takers are requesting and every judged item is served" : "no item has a taker to judge");
 			RAIL_DIAG_TAIL("handed to the card: fromCount=%d destCount=%d sourceCount=%d truncated=%d fromMass=%d filter=\"%s\" rows=%zu note=\"%s\"",
 				outInfo.fromCount, outInfo.destCount, outInfo.sourceCount, outInfo.truncated, outInfo.fromMass, outInfo.filterName.c_str(),
 				outInfo.rates.size(), outInfo.note.c_str());
