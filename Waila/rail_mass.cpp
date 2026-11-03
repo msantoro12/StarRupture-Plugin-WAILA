@@ -363,6 +363,8 @@ namespace Waila::RailMass
 		// LogisticsType values (ECrMassLogisticsType) the walk tells apart.
 		constexpr uint8_t kTypeStorage        = 1;
 		constexpr uint8_t kTypeBoth           = 2;   // makes and takes (ProducerConsumer): a Storage Depot v.2 is one
+		constexpr uint8_t kTypeProducer       = 3;   // only makes: a Cargo Receiver is one
+		constexpr uint8_t kTypeConsumer       = 4;   // only takes: a Cargo Sender is one
 		constexpr uint8_t kTypeLineNode       = 5;
 		constexpr uint8_t kTypeLineConnection = 6;
 
@@ -406,6 +408,9 @@ namespace Waila::RailMass
 			out.kind = type == kTypeLineNode || type == kTypeLineConnection ? NodeKind::PassThrough
 			         : type == kTypeStorage || (type == kTypeBoth && HoldsStockOnly(manager, node)) ? NodeKind::Storage
 			         : NodeKind::Machine;
+			out.role = type == kTypeProducer ? RailNetwork::Role::Producer
+			         : type == kTypeConsumer ? RailNetwork::Role::Consumer
+			         : RailNetwork::Role::Other;
 
 			const uint8_t* sockets = Fragment(manager, node, Found(g_socketsStruct, "CrLogisticsSocketsFragment"));
 			if (!sockets)

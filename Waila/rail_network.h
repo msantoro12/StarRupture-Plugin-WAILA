@@ -593,9 +593,21 @@ namespace Waila::RailNetwork
 		uint64_t track = 0;       // the socket pair it is on here, 0 for a socket without one
 	};
 
+	// What a machine node does with items, from its logistics type: a Producer
+	// only puts items on the rails and a Consumer only takes them. A Cargo
+	// Receiver is a Producer and a Cargo Sender a Consumer, neither with a
+	// recipe.
+	enum class Role : uint8_t
+	{
+		Other,
+		Producer,
+		Consumer,
+	};
+
 	struct NodeView
 	{
 		NodeKind              kind = NodeKind::PassThrough;
+		Role                  role = Role::Other;
 		std::vector<NodeLink> links;
 	};
 
@@ -756,6 +768,9 @@ namespace Waila::RailNetwork
 		std::string name;               // the building's name, which the From/To lines group by
 		bool        storage = false;    // storage: it holds the item, it neither makes nor takes it
 		std::string via;                // a source: the name of the storage its items reach the rail through
+		bool        unrated = false;    // a source or consumer with no rate to read (a Cargo Receiver or Sender):
+		                                // it is counted and named but adds to no total
+		float       stock   = 0.0f;     // storage: how many of the item it holds
 	};
 
 	// The totals of one item, items a minute; negative when unknown.
@@ -774,16 +789,22 @@ namespace Waila::RailNetwork
 
 	// Sums the parts into one flow per item that has a source, biggest output
 	// first. capacity is what the rail carries in items a minute (negative when
-	// unread, which leaves the figures uncapped). Each figure is floored at 0
-	// and capped by the capacity. max and min start from what the sources can
-	// put out; now from what they put out right now, which is 0 for a source
-	// that is stalled. A source whose rate is unread leaves the item's figures
-	// unknown; a consumer whose intake or request is unread leaves min or now
-	// unknown. short_ is set when max is below what the consumers requesting
-	// the item right now take, before the floor at 0; it is only judged (and
-	// only means something) when a consumer takes the item and every figure it
-	// needs is read. Storage holding the item is a source that
-	// makes nothing: an item only storage holds has all three figures 0.
+	// unread, which leaves the figures uncapped). max is what the sources can
+	// put out, capped by the capacity; min is max less every consumer at full
+	// rate; now is what the sources put out right now (capped, and 0 for a
+	// source that is stalled) less the consumers requesting right now. min and
+	// now are floored at 0: the cap comes first, then the subtraction. A source
+	// whose rate is unread leaves the item's figures unknown; a consumer whose
+	// intake or request is unread leaves min or now unknown. An unrated part (a
+	// Cargo Receiver or Sender) is counted but adds to no total.
+	//
+	// short_ is set when the consumers requesting the item right now are not
+	// served. It is only judged (and only means something) when a consumer takes
+	// the item and every figure it needs is read. For an item some building
+	// makes it means max is below what they take, before the floor at 0. An item
+	// only storage holds or a Cargo Receiver brings has no rate to judge by: it
+	// is short when consumers request it and the storage holds none of it and no
+	// receiver brings it.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
 		struct Sum
@@ -796,6 +817,9 @@ namespace Waila::RailNetwork
 			float    takeFull = 0.0f;
 			float    takeNow  = 0.0f;
 			bool     held     = false;   // storage holds it
+			float    stock    = 0.0f;    // how much the storage upstream holds
+			int32_t  makers   = 0;       // buildings making it, with or without a rate read
+			bool     brought  = false;   // a source with no rate (a Cargo Receiver) brings it
 			std::unordered_set<uint64_t> from, to;
 		};
 
@@ -815,14 +839,23 @@ namespace Waila::RailNetwork
 			if (part.storage)
 			{
 				sum.held = sum.held || part.source;
+				if (part.source)
+					sum.stock += (std::max)(0.0f, part.stock);
 				continue;
 			}
 
 			if (!(part.source ? sum.from : sum.to).insert(part.building).second)
 				continue;
 
+			if (part.unrated)
+			{
+				sum.brought = sum.brought || part.source;
+				continue;
+			}
+
 			if (part.source)
 			{
+				++sum.makers;
 				if (part.full >= 0.0f)
 					sum.flow.output += part.full;
 				else
@@ -852,7 +885,7 @@ namespace Waila::RailNetwork
 		std::vector<ItemFlow> flows;
 		for (Sum& sum : sums)
 		{
-			// An item nothing attached makes or holds is not on the card.
+			// An item nothing attached makes, brings or holds is not on the card.
 			if (sum.from.empty() && !sum.held)
 				continue;
 
@@ -863,12 +896,14 @@ namespace Waila::RailNetwork
 			{
 				flow.max = cap(flow.output);
 				if (sum.fullKnown)
-					flow.min = cap(flow.output - sum.takeFull);
+					flow.min = (std::max)(0.0f, flow.max - sum.takeFull);
 				if (sum.nowKnown)
 				{
-					flow.now    = cap(sum.outputNow - sum.takeNow);
+					flow.now    = (std::max)(0.0f, cap(sum.outputNow) - sum.takeNow);
 					flow.judged = flow.consumers > 0;
-					flow.short_ = flow.judged && flow.max < sum.takeNow;
+					flow.short_ = flow.judged
+						&& (sum.makers > 0 ? flow.max < sum.takeNow
+						                   : sum.takeNow > 0.0f && !sum.brought && sum.stock <= 0.0f);
 				}
 			}
 			flows.push_back(std::move(flow));

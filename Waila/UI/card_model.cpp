@@ -343,15 +343,18 @@ namespace Waila::UI
 			ItemLines lines;
 			lines.head.icon = Icons::ForItem(r.itemData);
 			lines.head.name = r.displayName;
+			using Lead = RateRow::Lead;
 			if (!r.from.empty())
-				lines.details.push_back({ nullptr, "From " + r.from, true });
+				lines.details.push_back({ nullptr, "From " + r.from, true, Lead::Bullet });
 			if (!r.to.empty())
-				lines.details.push_back({ nullptr, "To " + r.to, true });
+				lines.details.push_back({ nullptr, "To " + r.to, true, Lead::Bullet });
 			if (r.stored >= 0 && !r.storedIn.empty())
 			{
 				const int32_t count = static_cast<int32_t>((std::min)(r.stored, static_cast<int64_t>(INT32_MAX)));
-				lines.details.push_back({ nullptr, "Stored " + NumCompact(count) + " in " + r.storedIn, true });
+				lines.details.push_back({ nullptr, "Stored " + NumCompact(count) + " in " + r.storedIn, true, Lead::Bullet });
 			}
+			// The totals line is indented like the others with nothing in front.
+			lines.totals.lead = Lead::None;
 			// "\xC2\xB7" is a middle dot.
 			lines.totals.name = "min " + PerMin(r.perMinMin) + " \xC2\xB7 max " + PerMin(r.perMinMax)
 				+ " \xC2\xB7 current " + PerMin(r.perMinNow) + " /min";

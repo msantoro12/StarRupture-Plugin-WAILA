@@ -446,6 +446,7 @@ namespace Waila
 			// and of the storage downstream the items the rail carries. Storage
 			// holding an item is listed at that end when no building is.
 			std::unordered_set<uint64_t> counted;
+			std::vector<uint64_t> readStorages;   // those whose stock was read, empty ones too
 			std::vector<StoredItemEntry> held;
 			auto count = [&](const std::vector<uint64_t>& storages, bool upstream)
 			{
@@ -453,6 +454,7 @@ namespace Waila
 				{
 					if (!counted.insert(storage).second || !RailMass::ReadStored(storage, held))
 						continue;
+					readStorages.push_back(storage);
 					for (const StoredItemEntry& entry : held)
 					{
 						if (entry.uniqueName.empty() || !carriesItem(entry.uniqueName))
@@ -467,6 +469,7 @@ namespace Waila
 						RailNetwork::FlowPart part{ storage, entry.uniqueName, upstream };
 						part.name    = nameOf(storage);
 						part.storage = true;
+						part.stock   = static_cast<float>(entry.count);
 						out.parts.push_back(std::move(part));
 						if (upstream)
 							carried.insert(entry.uniqueName);
@@ -488,6 +491,62 @@ namespace Waila
 					takers.push_back(std::move(taker));
 			}
 
+			// Cargo Receivers upstream put items on the rail at a rate nothing
+			// reads: each is named and counted as a source of the items it
+			// brings but adds to no total. Those are the items a request names it
+			// the source of, else those its own inventory holds, else those held
+			// by the storage it feeds (the one the walk passed on the way back to
+			// it, or with no other source on the rail the storage downstream).
+			const bool noOtherSource = carried.empty();
+			for (const RailMass::Entity machine : attached.upstream)
+			{
+				RailMass::CrafterState crafter;
+				RailNetwork::NodeView view;
+				if ((RailMass::ReadCrafter(machine, crafter) && crafter.isCrafter && crafter.recipe)
+					|| !RailMass::ReadNode(machine, view) || view.role != RailNetwork::Role::Producer)
+					continue;
+
+				std::vector<std::pair<std::string, UAuItemDataBase*>> brings;
+				auto bring = [&](const std::string& unique, UAuItemDataBase* item)
+				{
+					if (unique.empty() || !carriesItem(unique)
+						|| std::any_of(brings.begin(), brings.end(), [&](const auto& b) { return b.first == unique; }))
+						return;
+					brings.emplace_back(unique, item);
+				};
+				for (const Taker& taker : takers)
+					for (const RailMass::RequestView& request : taker.requests)
+						for (const RailMass::Delivery& delivery : request.deliveries)
+							if (delivery.source == machine)
+								bring(Fields::UniqueNameOf(request.wanted), request.wanted);
+				if (RailMass::ReadStored(machine, held))
+					for (const StoredItemEntry& entry : held)
+						bring(entry.uniqueName, entry.itemData);
+				const auto through = attached.upstreamVia.find(machine);
+				if (brings.empty() && (through != attached.upstreamVia.end() || noOtherSource))
+				{
+					const std::vector<uint64_t> feeds = through != attached.upstreamVia.end()
+						? std::vector<uint64_t>{ through->second } : attached.downstreamStorage;
+					for (const uint64_t storage : feeds)
+						if (RailMass::ReadStored(storage, held))
+							for (const StoredItemEntry& entry : held)
+								if (entry.count > 0)
+									bring(entry.uniqueName, entry.itemData);
+				}
+
+				for (const auto& [unique, item] : brings)
+				{
+					Remember(out, item, unique);
+					carried.insert(unique);
+					RailNetwork::FlowPart part{ machine, unique, true };
+					part.name    = nameOf(machine);
+					part.unrated = true;
+					if (through != attached.upstreamVia.end())
+						part.via = nameOf(through->second);
+					out.parts.push_back(std::move(part));
+				}
+			}
+
 			// An item a taker asks for from a source on the way back to the rail
 			// is on the rail even when no maker was found for it.
 			for (const Taker& taker : takers)
@@ -506,6 +565,7 @@ namespace Waila
 						RailNetwork::FlowPart part{ delivery.source, unique, true };
 						part.name    = nameOf(delivery.source);
 						part.storage = upstreamStorage.count(delivery.source) != 0;
+						part.unrated = !part.storage;
 						out.parts.push_back(std::move(part));
 						break;
 					}
@@ -521,11 +581,14 @@ namespace Waila
 					return std::any_of(taker.requests.begin(), taker.requests.end(),
 						[&](const RailMass::RequestView& r) { return Fields::UniqueNameOf(r.wanted) == item; });
 				};
+				// An item only a request names has no rate to read: the taker is
+				// counted and named but adds to no total.
 				auto add = [&](const std::string& item, float perMin)
 				{
 					RailNetwork::FlowPart part{ taker.machine, item, false, perMin };
-					part.now  = !taker.requestsRead ? -1.0f : requesting(item) ? perMin : 0.0f;
-					part.name = name;
+					part.now     = !taker.requestsRead ? -1.0f : requesting(item) ? perMin : 0.0f;
+					part.name    = name;
+					part.unrated = perMin < 0.0f;
 					out.parts.push_back(std::move(part));
 					taken.insert(item);
 				};
@@ -542,7 +605,40 @@ namespace Waila
 						add(unique, -1.0f);
 				}
 			}
+
+			// Cargo Senders downstream take what the rail carries at a rate
+			// nothing reads. One with no request naming an item on the rail takes
+			// them all.
+			for (const RailMass::Entity machine : attached.downstream)
+			{
+				RailMass::CrafterState crafter;
+				RailNetwork::NodeView view;
+				if ((RailMass::ReadCrafter(machine, crafter) && crafter.isCrafter && crafter.recipe)
+					|| !RailMass::ReadNode(machine, view) || view.role != RailNetwork::Role::Consumer
+					|| std::any_of(out.parts.begin(), out.parts.end(),
+						[&](const RailNetwork::FlowPart& p) { return !p.source && p.building == machine; }))
+					continue;
+				for (const std::string& item : carried)
+				{
+					RailNetwork::FlowPart part{ machine, item, false };
+					part.name    = nameOf(machine);
+					part.unrated = true;
+					out.parts.push_back(std::move(part));
+					taken.insert(item);
+				}
+			}
 			count(attached.downstreamStorage, false);
+
+			// Storage the walk passed that holds none of an item says so: the
+			// stock line stays whenever the walk passes storage.
+			if (!readStorages.empty())
+				for (const std::string& item : carried)
+					if (!out.stock.count(item))
+					{
+						Cache::Stock& none = out.stock[item];
+						for (const uint64_t storage : readStorages)
+							none.storages.push_back(nameOf(storage));
+					}
 
 			// An item no building takes: where the requests of the makers behind
 			// the rail ship it to.

@@ -53,6 +53,7 @@ namespace Waila::UI
 		constexpr float kRateRowH   = 26.0f;
 		constexpr float kRateIcon   = 22.0f;
 		constexpr float kRateGap    = 10.0f;
+		constexpr float kRateBullet = 2.0f;    // radius of the bullet in front of a detail line
 		constexpr float kRateContH  = 17.0f;   // a wrapped line's continuation
 		constexpr float kRateIndent = 12.0f;   // and how far it is indented
 		constexpr int   kRateMaxLines = 3;
@@ -359,16 +360,21 @@ namespace Waila::UI
 		}
 
 		// The lines a rate row is drawn on: one, or for a row that wraps, as many
-		// as it takes at the card's width, the continuations indented.
+		// as it takes at the card's width, the continuations indented. The first
+		// line has the whole text column, the rest what the indent leaves.
 		std::vector<std::string> RowLines(const RateRow& row, float cardW)
 		{
 			if (!row.wrap)
 				return { row.name };
+			const float textW = cardW - kPadX * 2.0f - kRateIcon - kRateGap;
 			std::vector<std::string> lines;
-			WrapDescription(row.name, cardW - kPadX * 2.0f - kRateIcon - kRateGap - kRateIndent, &lines,
-				kFontLabel, kRateChar, kRateMaxLines);
+			WrapDescription(row.name, textW, &lines, kFontLabel, kRateChar, 1);
 			if (lines.empty())
-				lines.push_back(row.name);
+				return { row.name };
+			size_t rest = lines[0].size();
+			while (rest < row.name.size() && row.name[rest] == ' ')
+				++rest;
+			WrapDescription(row.name.substr(rest), textW - kRateIndent, &lines, kFontLabel, kRateChar, kRateMaxLines - 1);
 			return lines;
 		}
 
@@ -721,9 +727,12 @@ namespace Waila::UI
 				const float midY = y + kRateRowH * 0.5f * s;
 				const float textY = midY - kFontLabel * 0.5f * s;
 
-				Draw::IconBare(ui, dl, { left, midY - kRateIcon * 0.5f * s,
-				                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
-					row.icon, pal, 1.0f);
+				if (row.lead == RateRow::Lead::Icon)
+					Draw::IconBare(ui, dl, { left, midY - kRateIcon * 0.5f * s,
+					                         left + kRateIcon * s, midY + kRateIcon * 0.5f * s },
+						row.icon, pal, 1.0f);
+				else if (row.lead == RateRow::Lead::Bullet)
+					Draw::StatusDot(ui, dl, left + kRateIcon * 0.5f * s, midY, kRateBullet * s, pal.textPrimary, 0.0f);
 
 				const std::vector<std::string> lines = RowLines(row, (r.x1 - r.x0) / s);
 				for (size_t k = 0; k < lines.size(); ++k)
