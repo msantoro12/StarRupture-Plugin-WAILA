@@ -1,6 +1,7 @@
 #include "rail_detector.h"
 #include "rail_network.h"
 #include "rail_mass.h"
+#include "package_rates.h"
 #include "storage_detector.h"
 #include "crafter_detector.h"
 #include "plugin_helpers.h"
@@ -76,6 +77,27 @@ namespace Waila
 		};
 
 		Cache g_cache;
+
+		// The cargo connections' send rates, measured from the replicator's list
+		// (package_rates.h) and sampled on the tick whether or not a rail is
+		// aimed at, so a rate is there by the time one is.
+		PackageRates::Tracker g_rates;
+		float                 g_sampleClock  = 0.0f;
+		constexpr float       kSampleSeconds = 1.0f;
+
+		// A Cargo Receiver's or Sender's part takes its connections' rate; with
+		// none for one of them yet it is counted and named but adds to no total.
+		void TakeRate(RailNetwork::FlowPart& part, const PackageRates::Rate& rate)
+		{
+			part.unrated = !rate.known;
+			if (!rate.known)
+				return;
+			part.full = rate.full;
+			part.now  = rate.now;
+			// A feeder whose connections have all stopped sending can make
+			// nothing now, which is what a starved maker counts as.
+			part.starved = part.source && rate.full > 0.0f && rate.now <= 0.0f;
+		}
 
 		// Items per minute of one recipe at a crafting speed: output count /
 		// BuildTime x speed x 60. countOverride (when above 0) replaces the
@@ -492,13 +514,25 @@ namespace Waila
 					takers.push_back(std::move(taker));
 			}
 
-			// Cargo Receivers upstream put items on the rail at a rate nothing
-			// reads: each is named and counted as a source of the items it
+			// Cargo Receivers upstream put items on the rail at the rate their
+			// connections send (package_rates.h), which counts like a maker's.
+			// The items are those the replicator lists as sent to it. A receiver
+			// it does not list is named and counted as a source of the items it
 			// brings but adds to no total. Those are the items a request names it
 			// the source of, else those its own inventory holds, else those held
 			// by the storage it feeds (the one the walk passed on the way back to
 			// it, or with no other source on the rail the storage downstream).
 			const bool noOtherSource = carried.empty();
+			// The item behind a request, for the name and icon of one the
+			// replicator names; null when no taker asks for it.
+			auto wantedItem = [&](const std::string& unique) -> UAuItemDataBase*
+			{
+				for (const Taker& taker : takers)
+					for (const RailMass::RequestView& request : taker.requests)
+						if (Fields::UniqueNameOf(request.wanted) == unique)
+							return request.wanted;
+				return nullptr;
+			};
 			for (const RailMass::Entity machine : attached.upstream)
 			{
 				RailMass::CrafterState crafter;
@@ -515,24 +549,30 @@ namespace Waila
 						return;
 					brings.emplace_back(unique, item);
 				};
-				for (const Taker& taker : takers)
-					for (const RailMass::RequestView& request : taker.requests)
-						for (const RailMass::Delivery& delivery : request.deliveries)
-							if (delivery.source == machine)
-								bring(Fields::UniqueNameOf(request.wanted), request.wanted);
-				if (RailMass::ReadStored(machine, held))
-					for (const StoredItemEntry& entry : held)
-						bring(entry.uniqueName, entry.itemData);
+				const std::vector<std::string> sent = g_rates.ItemsOf(machine, true);
+				for (const std::string& unique : sent)
+					bring(unique, wantedItem(unique));
 				const auto through = attached.upstreamVia.find(machine);
-				if (brings.empty() && (through != attached.upstreamVia.end() || noOtherSource))
+				if (sent.empty())
 				{
-					const std::vector<uint64_t> feeds = through != attached.upstreamVia.end()
-						? std::vector<uint64_t>{ through->second } : attached.downstreamStorage;
-					for (const uint64_t storage : feeds)
-						if (RailMass::ReadStored(storage, held))
-							for (const StoredItemEntry& entry : held)
-								if (entry.count > 0)
-									bring(entry.uniqueName, entry.itemData);
+					for (const Taker& taker : takers)
+						for (const RailMass::RequestView& request : taker.requests)
+							for (const RailMass::Delivery& delivery : request.deliveries)
+								if (delivery.source == machine)
+									bring(Fields::UniqueNameOf(request.wanted), request.wanted);
+					if (RailMass::ReadStored(machine, held))
+						for (const StoredItemEntry& entry : held)
+							bring(entry.uniqueName, entry.itemData);
+					if (brings.empty() && (through != attached.upstreamVia.end() || noOtherSource))
+					{
+						const std::vector<uint64_t> feeds = through != attached.upstreamVia.end()
+							? std::vector<uint64_t>{ through->second } : attached.downstreamStorage;
+						for (const uint64_t storage : feeds)
+							if (RailMass::ReadStored(storage, held))
+								for (const StoredItemEntry& entry : held)
+									if (entry.count > 0)
+										bring(entry.uniqueName, entry.itemData);
+					}
 				}
 
 				for (const auto& [unique, item] : brings)
@@ -540,8 +580,8 @@ namespace Waila
 					Remember(out, item, unique);
 					carried.insert(unique);
 					RailNetwork::FlowPart part{ machine, unique, true };
-					part.name    = nameOf(machine);
-					part.unrated = true;
+					part.name = nameOf(machine);
+					TakeRate(part, g_rates.Of(machine, true, unique));
 					out.parts.push_back(std::move(part));
 				}
 			}
@@ -564,7 +604,8 @@ namespace Waila
 						RailNetwork::FlowPart part{ delivery.source, unique, true };
 						part.name    = nameOf(delivery.source);
 						part.storage = upstreamStorage.count(delivery.source) != 0;
-						part.unrated = !part.storage;
+						if (!part.storage)
+							TakeRate(part, g_rates.Of(delivery.source, true, unique));
 						out.parts.push_back(std::move(part));
 						break;
 					}
@@ -580,14 +621,23 @@ namespace Waila
 					return std::any_of(taker.requests.begin(), taker.requests.end(),
 						[&](const RailMass::RequestView& r) { return Fields::UniqueNameOf(r.wanted) == item; });
 				};
-				// An item only a request names has no rate to read: the taker is
-				// counted and named but adds to no total.
+				// An item only a request names has no recipe rate: a Cargo Sender
+				// takes it at its connections' rate, any other taker is counted and
+				// named but adds to no total.
 				auto add = [&](const std::string& item, float perMin)
 				{
 					RailNetwork::FlowPart part{ taker.machine, item, false, perMin };
-					part.now     = !taker.requestsRead ? -1.0f : requesting(item) ? perMin : 0.0f;
-					part.name    = name;
+					float nowPerMin = perMin;
 					part.unrated = perMin < 0.0f;
+					if (part.unrated)
+					{
+						const PackageRates::Rate rate = g_rates.Of(taker.machine, false, item);
+						TakeRate(part, rate);
+						if (rate.known)
+							nowPerMin = rate.now;
+					}
+					part.now     = !taker.requestsRead ? -1.0f : requesting(item) ? nowPerMin : 0.0f;
+					part.name    = name;
 					out.parts.push_back(std::move(part));
 					taken.insert(item);
 				};
@@ -605,9 +655,9 @@ namespace Waila
 				}
 			}
 
-			// Cargo Senders downstream take what the rail carries at a rate
-			// nothing reads. One with no request naming an item on the rail takes
-			// them all.
+			// Cargo Senders downstream take what the rail carries at the rate of
+			// their connections. One the replicator does not list, with no request
+			// naming an item on the rail, takes them all at no known rate.
 			for (const RailMass::Entity machine : attached.downstream)
 			{
 				RailMass::CrafterState crafter;
@@ -617,11 +667,14 @@ namespace Waila
 					|| std::any_of(out.parts.begin(), out.parts.end(),
 						[&](const RailNetwork::FlowPart& p) { return !p.source && p.building == machine; }))
 					continue;
+				const std::vector<std::string> sends = g_rates.ItemsOf(machine, false);
 				for (const std::string& item : carried)
 				{
+					if (!sends.empty() && std::find(sends.begin(), sends.end(), item) == sends.end())
+						continue;
 					RailNetwork::FlowPart part{ machine, item, false };
-					part.name    = nameOf(machine);
-					part.unrated = true;
+					part.name = nameOf(machine);
+					TakeRate(part, g_rates.Of(machine, false, item));
 					out.parts.push_back(std::move(part));
 					taken.insert(item);
 				}
@@ -681,7 +734,11 @@ namespace Waila
 		{
 			const auto info = g_cache.items.find(unique);
 			if (info == g_cache.items.end())
+			{
+				// An item only the replicator names has no data object to read.
+				display = unique;
 				return;
+			}
 			display = info->second.displayName;
 			// A dead item just loses its icon.
 			UObject* obj = info->second.item.Get();
@@ -832,8 +889,24 @@ namespace Waila
 		return true;
 	}
 
+	void RailDetector::SampleRates(float deltaSeconds)
+	{
+		g_sampleClock += deltaSeconds;
+		if (g_sampleClock < kSampleSeconds)
+			return;
+		g_sampleClock = 0.0f;
+
+		std::vector<PackageRates::Link> links;
+		float  interval  = 0.0f;
+		double serverNow = 0.0;
+		if (RailMass::ReadPackageLinks(links, interval, serverNow))
+			g_rates.Observe(links, serverNow, interval);
+	}
+
 	void RailDetector::Reset()
 	{
 		g_cache = Cache{};
+		g_rates.Clear();
+		g_sampleClock = 0.0f;
 	}
 }

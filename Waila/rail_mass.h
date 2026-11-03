@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rail_network.h"
+#include "package_rates.h"
 
 #include <cstdint>
 #include <vector>
@@ -107,4 +108,11 @@ namespace Waila::RailMass
 	// in the tick they were read. Same rules as above, with the stock's own
 	// gate; false leaves `out` empty.
 	bool ReadStored(Entity storage, std::vector<StoredItemEntry>& out);
+
+	// The cargo connections the package transport replicator lists, each with
+	// the Mass entity of its sender and receiver (0 when one does not resolve),
+	// the replicator's send interval in seconds (0 when unread) and the server
+	// time now. Own gate (the package-rates feature) and own fault flag. False,
+	// with `out` empty, when the gate is off or a read faulted.
+	bool ReadPackageLinks(std::vector<PackageRates::Link>& out, float& interval, double& serverNow);
 }

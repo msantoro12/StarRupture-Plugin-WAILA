@@ -279,6 +279,8 @@ namespace Waila::UI
 			return;
 		}
 
+		RailDetector::SampleRates(deltaSeconds);
+
 
 		Waila::Core::RaycastHit hit;
 		Waila::CrafterInfo  info;

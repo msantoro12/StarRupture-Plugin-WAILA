@@ -89,6 +89,8 @@ namespace Waila::Fields
 	inline auto ConnectionsContainer     = WAILA_FIELD(ACrPackageTransportReplicator, ConnectionsContainer);
 	inline auto ConnectionsData          = WAILA_FIELD(FCrPackageTransportConnectionsContainer, ConnectionsData);
 	inline auto ConnectionSender         = WAILA_FIELD(FCrPackageTransportConnectionData, Sender);
+	inline auto ConnectionReceiver       = WAILA_FIELD(FCrPackageTransportConnectionData, Receiver);
+	inline auto ConnectionAmount         = WAILA_FIELD(FCrPackageTransportConnectionData, RequestedAmount);
 	inline auto ConnectionItem           = WAILA_FIELD(FCrPackageTransportConnectionData, Item);
 	inline auto ConnectionStartSendTime  = WAILA_FIELD(FCrPackageTransportConnectionData, StartSendServerTime);
 	inline auto HelperNetID              = WAILA_FIELD(FCrMassEntityReplicationHelper, NetID);
@@ -364,12 +366,20 @@ namespace Waila::Features
 			HelperNetID, HelperEntity, HelperSize, SenderIsSender, SenderLocation, SenderItemType, SenderEntity,
 			SenderReceiverSize, ConnectionDataSize)), {} };
 
+	// The send rate of each cargo connection, for the rail card's Cargo Receivers
+	// and Senders. Its own feature: a name the game drops turns off those rates
+	// and leaves the Cargo Sender card as it is.
+	inline PluginMap::Feature PackageRates{ "package-rates", "Cargo send rates on the rail card",
+		Join(ItemKeys, KeysOf(PackageTransportReplicator, SendingTime, ConnectionsContainer, ConnectionsData,
+			ConnectionSender, ConnectionReceiver, ConnectionAmount, ConnectionItem, ConnectionStartSendTime,
+			HelperEntity, HelperSize, ConnectionDataSize)), {} };
+
 	// Declares them all. Call first in OnPluginLoadHooks. The rail sources
 	// feature (rail_mass.cpp) lists the keys of its own reader, which are many
 	// and live with the code that reads them, and the Items keys it builds on.
 	inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
-		const bool listed = PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport);
+		const bool listed = PluginMap::DeclareFeatures(scanner, self, Buildings, Items, Crafters, DroneRails, PackageTransport, PackageRates);
 		return RailMass::Declare(self, scanner, ItemKeys) && listed;
 	}
 
@@ -379,6 +389,7 @@ namespace Waila::Features
 	inline bool ShowCrafters()         { return Crafters.On(); }
 	inline bool ShowDroneRails()       { return DroneRails.On(); }
 	inline bool ShowPackageTransport() { return PackageTransport.On(); }
+	inline bool ShowPackageRates()     { return PackageRates.On(); }
 
 	// A drone rail's sources and destinations from the game's Mass data.
 	inline bool ShowRailSources()      { return RailMass::Available(); }

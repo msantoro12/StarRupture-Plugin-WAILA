@@ -73,7 +73,8 @@ namespace Waila::Fields
             FragMultiplier, FragMissingItems, FragOutputFull, FragSelected, FragSpeed,
             SocketsData, Spline, SocketRef, SocketTransform,
             PackageTransportReplicator, SendingTime, SenderReceiversContainer, AllSenderReceiversData,
-            ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionItem, ConnectionStartSendTime,
+            ConnectionsContainer, ConnectionsData, ConnectionSender, ConnectionReceiver, ConnectionAmount, ConnectionItem,
+            ConnectionStartSendTime,
             HelperNetID, HelperEntity, PlacementSockets, SocketUseCount,
             SenderIsSender, SenderLocation, SenderItemType, SenderEntity);
 
