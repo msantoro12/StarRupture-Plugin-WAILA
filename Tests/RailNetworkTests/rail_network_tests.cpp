@@ -495,7 +495,8 @@ namespace
 		Check(flows[0].judged && !flows[0].short_, "and the row stays judged");
 
 		flows = SumFlows({ receiver, Requesting(Taker(2, "A", 40), true) }, 480.0f);
-		Check(flows.size() == 1 && Near(flows[0].max, 0) && flows[0].judged, "an item only a receiver brings is a row");
+		Check(flows.size() == 1 && flows[0].judged, "an item only a receiver brings is a row");
+		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "its totals are unknown, not 0");
 	}
 
 	FlowPart InStorage(FlowPart part, const std::string& name);
