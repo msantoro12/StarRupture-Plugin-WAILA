@@ -21,6 +21,7 @@ namespace Waila
 		int32_t               need = 0;
 		int32_t               have = -1;   // -1 when the input store could not be read
 		float                 perMin = -1.0f;   // items taken a minute at the crafter's speed; -1 when unknown
+			float                 arrivalPerMin = -1.0f;   // items a minute seen arriving in the input store lately; -1 until measured
 
 		bool IsValid() const { return itemClass != nullptr || itemData != nullptr; }
 	};
