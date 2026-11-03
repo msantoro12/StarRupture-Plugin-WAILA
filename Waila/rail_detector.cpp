@@ -956,9 +956,20 @@ namespace Waila
 							++makers;
 							running += part.now > 0.0f;
 							outputNow += part.now > 0.0f ? part.now : 0.0f;
+							if (part.unrated)
+								RAIL_DIAG_TAIL("  min part %s %llu \"%s\": Cargo Receiver, rate not exposed: counts 0 in min, adds an unknown extra to max and current (+?, or ? with no maker)",
+									flow.item.c_str(), static_cast<unsigned long long>(part.building), part.name.c_str());
+							else
+								RAIL_DIAG_TAIL("  min part %s %llu \"%s\": counts %.2f of full %.2f (%s)", flow.item.c_str(),
+									static_cast<unsigned long long>(part.building), part.name.c_str(),
+									part.full < 0.0f ? -1.0f : part.starved ? 0.0f : part.full, part.full,
+									part.starved ? "starved: missing an input, counts 0" : "has its inputs (running or output full): counts its full rate");
 						}
 						else
 						{
+							if (part.unrated)
+								RAIL_DIAG_TAIL("  taker %s %llu \"%s\": no rate read (Cargo Sender or request-only): counted and named, adds nothing to demand or Short",
+									flow.item.c_str(), static_cast<unsigned long long>(part.building), part.name.c_str());
 							++takers;
 							requesting += part.now > 0.0f;
 							takeFull += part.full > 0.0f ? part.full : 0.0f;
@@ -967,8 +978,10 @@ namespace Waila
 					}
 					RAIL_DIAG_TAIL("flow %s: makers %d (%d putting out now, output now %.2f, full %.2f), takers %d (%d requesting, take now %.2f, take full %.2f)",
 						flow.item.c_str(), makers, running, outputNow, flow.output, takers, requesting, takeNow, takeFull);
-					RAIL_DIAG_TAIL("flow %s: min=%.2f now=%.2f max=%.2f judged=%d short=%d", flow.item.c_str(), flow.min, flow.now, flow.max,
-						flow.judged, flow.short_);
+					RAIL_DIAG_TAIL("flow %s: min=%.2f now=%.2f max=%.2f judged=%d short=%d shortBy=%.2f plusUnknown=%d (now = min(makers' output now capped %.2f, takers' demand now %.2f))",
+						flow.item.c_str(), flow.min, flow.now, flow.max, flow.judged, flow.short_, flow.shortBy, flow.plusUnknown,
+						g_cache.capacity >= 0.0f ? (std::min)(outputNow, g_cache.capacity) : outputNow, takeNow);
+					RAIL_DIAG_TAIL("flow %s: measured flow not read in this build (no drone sampler); the estimate above is not compared", flow.item.c_str());
 				}
 				if (g_cache.flows.empty())
 					RAIL_DIAG_TAIL("no flows: no maker, no storage and no request gave the rail an item");
