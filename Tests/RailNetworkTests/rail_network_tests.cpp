@@ -5,6 +5,7 @@
 // Prints each failure and returns non-zero when any check fails.
 
 #include "rail_network.h"
+#include "package_rates.h"
 
 #include <algorithm>
 #include <cmath>
@@ -913,6 +914,71 @@ namespace
 		Check(Set(found.upstream) == std::set<uint64_t>{ 1 }, "a two-way rail walks back from both ends");
 		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "a loop is walked once");
 	}
+
+	// Cargo connection rates: amount x 60 / gap, the replicator's interval until
+	// two sends are seen, none for a connection never seen sending.
+	void TestPackageRates()
+	{
+		using namespace Waila::PackageRates;
+		const uint64_t sender = 5, receiver = 6;
+		Link link;
+		link.sender   = sender;
+		link.receiver = receiver;
+		link.item     = "Wolfram";
+		link.amount   = 10;
+
+		Tracker tracker;
+		Check(!tracker.Of(receiver, true, "Wolfram").known, "no connections seen: no rate");
+
+		// Listed but never sent: no rate, the reason is in the entry.
+		link.start = 0.0f;
+		tracker.Observe({ link }, 100.0, 5.0f);
+		Rate rate = tracker.Of(receiver, true, "Wolfram");
+		Check(rate.links == 1 && !rate.known, "never seen sending: counted, no rate");
+
+		// First send: the interval stands in for the gap.
+		link.start = 100.0f;
+		tracker.Observe({ link }, 100.5, 5.0f);
+		rate = tracker.Of(receiver, true, "Wolfram");
+		Check(rate.known && Near(rate.full, 120.0f) && rate.measured == 0, "one send: amount x 60 / interval");
+
+		// Second send: the measured gap takes over.
+		link.start = 108.0f;
+		tracker.Observe({ link }, 108.5, 5.0f);
+		rate = tracker.Of(receiver, true, "Wolfram");
+		Check(rate.known && Near(rate.full, 75.0f) && Near(rate.now, 75.0f) && rate.measured == 1, "two sends: the measured gap");
+
+		// The same start seen again is not a new send.
+		tracker.Observe({ link }, 109.0, 5.0f);
+		Check(Near(tracker.Of(receiver, true, "Wolfram").full, 75.0f), "an unchanged start adds no send");
+
+		// No new send for long: idle, so full stays and now drops to 0.
+		tracker.Observe({ link }, 140.0, 5.0f);
+		rate = tracker.Of(receiver, true, "Wolfram");
+		Check(Near(rate.full, 75.0f) && Near(rate.now, 0.0f), "stopped sending: now is 0, full stays");
+
+		// Sender side, and a second connection sums.
+		Link other = link;
+		other.receiver = 7;
+		other.start    = 0.0f;
+		other.amount   = 5;
+		tracker.Observe({ link, other }, 140.0, 5.0f);
+		rate = tracker.Of(sender, false, "Wolfram");
+		Check(rate.links == 2 && !rate.known, "a sender with a connection never seen sending has no rate yet");
+		other.start = 143.0f;
+		tracker.Observe({ link, other }, 143.5, 5.0f);
+		rate = tracker.Of(sender, false, "Wolfram");
+		Check(rate.known && Near(rate.full, 75.0f + 60.0f), "a sender's rate is the sum of its connections");
+		Check(tracker.ItemsOf(sender, false) == std::vector<std::string>{ "Wolfram" }, "items of a sender");
+		Check(tracker.ItemsOf(receiver, false).empty(), "a receiver has no outgoing items");
+
+		// A connection no longer listed is dropped.
+		tracker.Observe({ other }, 144.0, 5.0f);
+		Check(!tracker.Of(receiver, true, "Wolfram").links, "a dropped connection is forgotten");
+
+		tracker.Clear();
+		Check(tracker.Entries().empty(), "cleared");
+	}
 }
 
 int main()
@@ -944,6 +1010,7 @@ int main()
 	TestAttachedLaneTracks();
 	TestAttachedThroughStorage();
 	TestStorageEnds();
+	TestPackageRates();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");

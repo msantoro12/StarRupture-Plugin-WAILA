@@ -244,6 +244,7 @@ namespace Waila::RailMass
 		bool g_capacityFaulted  = false;
 		bool g_buildingFaulted  = false;
 		bool g_stockFaulted     = false;
+		bool g_packageFaulted   = false;
 
 		// Bounds on what one array can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
@@ -758,6 +759,54 @@ namespace Waila::RailMass
 			}
 		}
 
+		// The cargo connections the package transport replicator lists: the item
+		// and package size of each, when its latest send started, and the Mass
+		// entity at each end. The replicator names a building by its persistent
+		// id, which is resolved here like any other. `interval` is its send
+		// interval and `serverNow` the server time, for the rates.
+		void ReadPackageLinksImpl(std::vector<PackageRates::Link>& out, float& interval, double& serverNow)
+		{
+			const UWorld* world = PluginSdkRuntime::GetWorld();
+			AGameStateBase* gameState = world ? UGameplayStatics::GetGameState(world) : nullptr;
+			if (!gameState || !gameState->IsA(ACrGameStateBase::StaticClass()))
+				return;
+			auto* replicator = Fields::ValueOr<ACrPackageTransportReplicator*>(
+				Fields::PackageTransportReplicator, static_cast<ACrGameStateBase*>(gameState), nullptr);
+			if (!replicator || !UKismetSystemLibrary::IsValid(replicator))
+				return;
+
+			interval  = Fields::ValueOr<float>(Fields::SendingTime, replicator);
+			serverNow = gameState->GetServerWorldTimeSeconds();
+
+			// The persistent id sits at the helper's Entity member, which must lie
+			// inside the helper as the loader sizes it.
+			const PluginFieldSpec& entityField = Fields::HelperEntity;
+			if (entityField.offset < 0 || kPersistentSize.size == 0
+				|| static_cast<uint32_t>(entityField.offset) + kPersistentSize.size > Fields::HelperSize.size)
+				return;
+			auto resolve = [&](const void* helper)
+			{
+				return HandleOf(static_cast<const uint8_t*>(helper) + entityField.offset, world);
+			};
+
+			const auto* container = Fields::ConnectionsContainer.In(replicator);
+			const Fields::StructArray connections(Fields::ConnectionsData.In(container), Fields::ConnectionDataSize);
+			for (int32_t i = 0; i < connections.Num() && i < kMaxArray; ++i)
+			{
+				const uint8_t* entry = connections.At(i);
+				auto* item = Fields::ValueOr<UCrItemDataBase*>(Fields::ConnectionItem, entry, nullptr);
+				if (!item || !UKismetSystemLibrary::IsValid(item))
+					continue;
+				PackageRates::Link link;
+				link.sender   = resolve(Fields::ConnectionSender.In(entry));
+				link.receiver = resolve(Fields::ConnectionReceiver.In(entry));
+				link.item     = Fields::UniqueNameOf(item);
+				link.amount   = Fields::ValueOr<int32_t>(Fields::ConnectionAmount, entry);
+				link.start    = Fields::ValueOr<float>(Fields::ConnectionStartSendTime, entry);
+				out.push_back(std::move(link));
+			}
+		}
+
 		// A bad pointer in the game's data must not take the game down.
 		// A fault turns off the reads that share `faulted`; the capacity and the
 		// building reads keep their own, so one of them failing leaves the rest.
@@ -1001,6 +1050,19 @@ namespace Waila::RailMass
 			return false;
 		bool found = false;
 		const bool ok = Guarded([&] { ReadStoredImpl(storage, out, found); }, g_stockFaulted) && found;
+		if (!ok)
+			out.clear();
+		return ok;
+	}
+
+	bool ReadPackageLinks(std::vector<PackageRates::Link>& out, float& interval, double& serverNow)
+	{
+		out.clear();
+		interval  = 0.0f;
+		serverNow = 0.0;
+		if (!Available() || g_packageFaulted || !Features::ShowPackageRates())
+			return false;
+		const bool ok = Guarded([&] { ReadPackageLinksImpl(out, interval, serverNow); }, g_packageFaulted);
 		if (!ok)
 			out.clear();
 		return ok;

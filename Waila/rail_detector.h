@@ -92,7 +92,12 @@ namespace Waila
 		// about once a second, so calling this every tick is cheap.
 		static bool GetRailInfo(SDK::AActor* actor, RailInfo& out);
 
-		// Drops the cache. Called when the plugin disables.
+		// Game thread only. Reads the cargo connections about once a second to
+		// measure how fast each Cargo Receiver and Sender moves items, whether
+		// or not a rail is aimed at. Called every tick.
+		static void SampleRates(float deltaSeconds);
+
+		// Drops the cache and the measured rates. Called when the plugin disables.
 		static void Reset();
 	};
 }
