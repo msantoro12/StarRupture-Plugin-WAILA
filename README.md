@@ -22,15 +22,16 @@
 Aim at a drone rail and the card shows what travels along it, item by item. WAILA follows the rails back from the one you point at, through poles, junctions, mergers, storage and stations, to the machines feeding it, then on from the rail's end to every machine taking the items.
 
 **Header.** The rail's name and what it carries per minute ("Rail v.3  480/min"), then a dot and "From 20 to 4": how many buildings make the items on it and how many take them. The dot is:
-- **green** when all is good: the machines asking for an item right now want no more than the rail can bring;
-- **yellow** when they want more than the rail can bring (a bottleneck);
+- **green** when all is good: the machines asking for an item right now want no more than the rail can bring. For an item only storage or a Cargo Receiver supplies, which has no rate to compare, green means the storage holds some or a receiver brings it;
+- **yellow** when they want more than the rail can bring (a bottleneck), or, for an item only storage supplies, when the storage holds none and a machine is asking for it;
 - **red** when a machine feeding the rail is starved, short of an input;
 - **grey** when there is nothing to judge, for example nothing takes from the rail.
 
-**Each item** shows its icon and name, then:
-- **From** and **To**: the buildings making and taking it, buildings of one kind together with their count, the biggest kind first ("From 2x Fabricator v.2, Furnace"; at most three kinds, then "+N more"). A long line continues on the next one. A machine filling a depot reads "From 4x Assembler via Storage Depot v.2", and machines taking from a depot are listed as takers. An item only a depot holds reads "From Storage Depot v.2";
-- **Stored**: what the storage on the network holds of it ("Stored 18.6k in 3x Storage Depot v.2");
-- **min · max · current** per minute. Max is what its makers put out with nobody pulling, min what is left with every machine that uses it running full out, and current what is left right now: what the makers are putting out (a stalled maker puts out nothing) less what the machines asking for it right now take. All are capped at what the rail itself carries and none goes below 0.
+**Each item** shows its icon and name, then a bulleted line each for:
+- **From** and **To**: the buildings making and taking it, buildings of one kind together with their count, the biggest kind first ("From 2x Fabricator v.2, Furnace"; at most three kinds, then "+N more"). A long line continues on the next one. A machine filling a depot reads "From 4x Assembler via Storage Depot v.2", and machines taking from a depot are listed as takers. An item only a depot holds reads "From Storage Depot v.2". A Cargo Receiver is listed as a source ("From Cargo Receiver") and a Cargo Sender as a taker; the game does not expose their rate, so they are named and counted but add nothing to the totals below;
+- **Stored**: what the storage on the network holds of it ("Stored 18.6k in 3x Storage Depot v.2"), and "Stored 0 in Storage Depot v.2" when the storage on the line is empty of it;
+
+and under them, in line with the text, **min · max · current** per minute. Max is what its makers put out with nobody pulling, capped at what the rail itself carries; min is max less every machine that uses it running full out; and current is max less the machines asking for it right now, where a stalled maker puts out nothing. None goes below 0.
 
 **Using it.** Aim at a rail you suspect is a bottleneck. A yellow dot says the takers want more than the rail brings: add a maker or a second rail. A red dot says a feeder is starved: follow the rail back to the makers in "From" and aim at one to see which ingredient it is short of. A "current" of 0 with a long "To" line means the takers use everything the rail brings.
 

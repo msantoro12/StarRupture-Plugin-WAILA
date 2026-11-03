@@ -1,3 +1,9 @@
+A rail card's From, To and Stored lines start with a bullet, and the min, max and current line sits under them with nothing in front; only the item's own line carries its icon
+A rail lists Cargo Receivers as sources ("From Cargo Receiver") and Cargo Senders as takers. The game does not expose their rate, so they are named and counted but add to no total; a rail fed only by a receiver no longer reads "Nothing upstream makes or stores items for this rail"
+An item only storage or a Cargo Receiver supplies is judged by its stock: the dot stays green while the storage holds some or a receiver brings it, and turns yellow only when the storage is empty and a machine is asking for it
+A rail's min is the rail-capped max less every taker at full rate: the cap is applied before the takers come off, so a rail whose makers out-produce it no longer reads a min above its max less its takers; current follows the same order
+The Stored line shows "Stored 0 in Storage Depot v.2" when the storage on the line is empty of the item instead of vanishing
+The widest From or To line on a rail card no longer wraps its last word early; only the continuation lines are indented
 A rail card header shows the rail's capacity next to its name ("Rail v.3  480/min") and "From N to M" with a status dot: green when the machines asking for an item right now want no more than the rail can bring, yellow when they want more, red when a maker feeding the rail is starved, grey when nothing takes from it
 A rail card's From, To and Stored lines continue on a second line instead of being cut, and Stored reads in the short form ("18.6k")
 A rail's "current" counts only what its makers put out right now: a stalled maker (output full or short of an input) adds nothing

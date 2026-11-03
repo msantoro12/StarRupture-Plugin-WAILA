@@ -45,9 +45,13 @@ namespace Waila::UI
 	// under it (where it comes from and goes, what is stored, its totals).
 	struct RateRow
 	{
+		// What stands in the icon column in front of the text.
+		enum class Lead : uint8_t { Icon, Bullet, None };
+
 		PluginTextureHandle icon = nullptr;
 		std::string         name;
 		bool                wrap = false;   // a long line continues on the next one instead of being cut
+		Lead                lead = Lead::Icon;
 	};
 
 	// Everything the card needs for one frame, with every engine pointer already

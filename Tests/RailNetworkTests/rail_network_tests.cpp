@@ -432,7 +432,7 @@ namespace
 		Check(Near(flows[0].max, 480) && Near(flows[0].min, 0) && Near(flows[0].now, 480), "capped at the rail, floored at 0");
 
 		flows = SumFlows({ Maker(1, "A", 600), Requesting(Taker(2, "A", 60), true) }, 480.0f);
-		Check(Near(flows[0].min, 480) && Near(flows[0].now, 480), "what is left is capped too");
+		Check(Near(flows[0].min, 420) && Near(flows[0].now, 420), "the cap comes first, then the takers come off");
 
 		flows = SumFlows({ Maker(1, "A", 60), Maker(2, "A", -1) }, 480.0f);
 		Check(flows[0].max < 0 && flows[0].min < 0 && flows[0].now < 0, "an unread source makes the row unknown");
@@ -442,6 +442,99 @@ namespace
 
 		flows = SumFlows({ Maker(1, "A", 60) }, -1.0f);
 		Check(Near(flows[0].max, 60) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "no capacity: uncapped");
+	}
+
+	// The rail's cap applies to the makers before the takers come off: min is
+	// max less every taker at full rate. The three cases are from a gss.27 dump.
+	void TestFlowsCapBeforeTakers()
+	{
+		// Six furnaces make 2880 a minute, six takers want 240 in all.
+		std::vector<FlowPart> parts;
+		for (uint64_t i = 1; i <= 6; ++i)
+			parts.push_back(Maker(i, "A", 480));
+		for (uint64_t i = 11; i <= 16; ++i)
+			parts.push_back(Taker(i, "A", 40));
+		std::vector<ItemFlow> flows = SumFlows(parts, 480.0f);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 240), "480 of 2880 made, 240 taken: min 240");
+
+		// Three fabricators make 540 (3 x 180), fifteen presses take 405.
+		parts.clear();
+		for (uint64_t i = 1; i <= 3; ++i)
+			parts.push_back(Maker(i, "A", 180));
+		for (uint64_t i = 11; i <= 25; ++i)
+			parts.push_back(Taker(i, "A", 27));
+		flows = SumFlows(parts, 480.0f);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 75), "480 of 540 made, 405 taken: min 75");
+
+		// Twenty furnaces make 600 (one running, 30 now), six takers want 60 and request it now.
+		parts.clear();
+		for (uint64_t i = 1; i <= 20; ++i)
+			parts.push_back(i == 1 ? Maker(i, "A", 30) : Stalled(Maker(i, "A", 30)));
+		for (uint64_t i = 11; i <= 16; ++i)
+			parts.push_back(Requesting(Taker(100 + i, "A", 10), true));
+		flows = SumFlows(parts, 480.0f);
+		Check(Near(flows[0].max, 480) && Near(flows[0].min, 420) && Near(flows[0].now, 0),
+			"480 of 600 made, 60 taken: min 420, now 30 - 60 floored at 0");
+
+		// Everything running: now is capped before the takers come off too.
+		flows = SumFlows({ Maker(1, "A", 900), Requesting(Taker(2, "A", 100), true) }, 480.0f);
+		Check(Near(flows[0].now, 380), "now: 900 capped to 480, less 100");
+	}
+
+	// A Cargo Receiver or Sender has no rate to read: it is counted and named
+	// but adds to no total and leaves no figure unknown.
+	void TestFlowsUnrated()
+	{
+		FlowPart receiver{ 90, "A", true };
+		receiver.unrated = true;
+		FlowPart sender{ 91, "A", false };
+		sender.unrated = true;
+		std::vector<ItemFlow> flows = SumFlows({ Maker(1, "A", 100), receiver, Requesting(Taker(2, "A", 40), true), sender }, 480.0f);
+		Check(flows[0].sources == 2 && flows[0].consumers == 2, "the receiver and the sender are counted");
+		Check(Near(flows[0].max, 100) && Near(flows[0].min, 60) && Near(flows[0].now, 60), "but add to no total: 100, 60, 60");
+		Check(flows[0].judged && !flows[0].short_, "and the row stays judged");
+
+		flows = SumFlows({ receiver, Requesting(Taker(2, "A", 40), true) }, 480.0f);
+		Check(flows.size() == 1 && Near(flows[0].max, 0) && flows[0].judged, "an item only a receiver brings is a row");
+	}
+
+	FlowPart InStorage(FlowPart part, const std::string& name);
+
+	// An item only storage holds, or a receiver brings, has no rate to judge by:
+	// it is short only when consumers request it and neither stock nor a receiver
+	// is there. An item some building makes keeps the rule that max must cover
+	// what the consumers request.
+	void TestFlowsStorageDot()
+	{
+		auto depot = [](float stock)
+		{
+			FlowPart part = InStorage({ 7, "A", true }, "Storage Depot v.2");
+			part.stock = stock;
+			return part;
+		};
+		FlowPart receiver{ 90, "A", true };
+		receiver.unrated = true;
+
+		std::vector<ItemFlow> flows = SumFlows({ depot(16000), Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(flows[0].judged && !flows[0].short_, "stock on hand, consumers requesting: not short");
+		Check(Near(flows[0].max, 0) && Near(flows[0].now, 0), "the totals stay 0 for an item only storage holds");
+
+		flows = SumFlows({ depot(0), Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(flows[0].judged && flows[0].short_, "no stock, consumers requesting: short");
+
+		flows = SumFlows({ depot(0), Requesting(Taker(2, "A", 60), false) }, 480.0f);
+		Check(flows[0].judged && !flows[0].short_, "no stock but nobody requesting: not short");
+
+		flows = SumFlows({ depot(0), receiver, Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(flows[0].judged && !flows[0].short_, "a receiver brings it: not short");
+
+		FlowPart downstream = depot(0);
+		downstream.source = false;
+		flows = SumFlows({ depot(5), downstream, Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(!flows[0].short_, "only the storage upstream counts as stock");
+
+		flows = SumFlows({ Maker(1, "A", 30), depot(16000), Requesting(Taker(2, "A", 60), true) }, 480.0f);
+		Check(flows[0].short_, "a maker feeds it: 30 made, 60 requested is still short, stock or not");
 	}
 
 	// A stalled maker (output full, or short of input) puts nothing on the rail
@@ -785,6 +878,9 @@ int main()
 	TestFlowsOneRowPerItem();
 	TestFlowsLimits();
 	TestFlowsStalledSource();
+	TestFlowsCapBeforeTakers();
+	TestFlowsUnrated();
+	TestFlowsStorageDot();
 	TestFlowsShort();
 	TestEndLines();
 	TestAttachedLongLine();
