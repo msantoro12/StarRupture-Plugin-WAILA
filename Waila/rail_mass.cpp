@@ -374,6 +374,7 @@ namespace Waila::RailMass
 
 		const uint8_t* SharedFragment(const void* manager, Entity entity, const UScriptStruct* type);
 		void ReadCrafterImpl(Entity building, CrafterState& out);
+		void ReadBuildingImpl(Entity building, UCrBuildingData*& out);
 
 		// WAILA-RAIL-DIAG BEGIN
 		// Why a fragment read of an entity came back empty.
@@ -507,6 +508,23 @@ namespace Waila::RailMass
 				if (link.other && link.other != node)
 					out.links.push_back(link);
 			}
+			// WAILA-RAIL-DIAG BEGIN
+			// A pass-through node with three or more rails is a splitter, merger or
+			// balancer: the dump names the building and its in and out rails.
+			if (RailDiag::Active() && out.kind == RailNetwork::NodeKind::PassThrough && out.links.size() >= 3)
+			{
+				UCrBuildingData* data = nullptr;
+				ReadBuildingImpl(node, data);
+				int in = 0, outward = 0;
+				for (const RailNetwork::NodeLink& link : out.links)
+				{
+					in += link.in ? 1 : 0;
+					outward += link.out ? 1 : 0;
+				}
+				RAIL_DIAG_LINE("    node %s: junction building \"%s\", %zu rails (%d in, %d out): the walk passes through it, it counts as neither maker nor taker, and its split rule is not read",
+					RailDiag::Id(node).c_str(), data ? data->GetName().c_str() : "unknown", out.links.size(), in, outward);
+			}
+			// WAILA-RAIL-DIAG END
 		}
 
 		// A request's item, and with the requests feature its type and the
