@@ -200,7 +200,19 @@ namespace Waila::RailMass
 		Member mInputInventory = RAIL_MEMBER(FCrInventoryFragment, InputInventoryContainer, &kContainerSize, 0);
 		Member mMainInventory  = RAIL_MEMBER(FCrInventoryFragment, MainInventoryContainer, &kContainerSize, 0);
 
+		// The delivery read, a feature of its own: each open request lists the
+		// deliveries assigned to it, and each one names the building it picks the
+		// item up at (ItemSource) and brings it to (ItemDestination). Its miss
+		// turns off the source and destination names and nothing else.
+		SizeRow kRuntimeSize     = RAIL_SIZE_ROW("FCrLogisticsRequestRuntimeData");
+		Member mRequestType      = RAIL_MEMBER(FCrLogisticsRequestData, Type, nullptr, kByte);
+		Member mRuntimeData      = RAIL_MEMBER(FCrLogisticsRequestData, RuntimeData, nullptr, kArray);
+		Member mItemSource       = RAIL_MEMBER(FCrLogisticsRequestRuntimeData, ItemSource, &kPersistentSize, 0);
+		Member mItemDestination  = RAIL_MEMBER(FCrLogisticsRequestRuntimeData, ItemDestination, &kPersistentSize, 0);
+
 		Member* const kTrackMembers[] = { &mSocketPair };
+
+		Member* const kRequestMembers[] = { &mRequestType, &mRuntimeData, &mItemSource, &mItemDestination };
 
 		Member* const kStockMembers[] = { &mInputInventory, &mMainInventory };
 
@@ -221,11 +233,13 @@ namespace Waila::RailMass
 		PluginMap::Feature g_buildingFeature{ "rail-buildings", "Which building a rail's far ends are", {}, {} };
 		PluginMap::Feature g_trackFeature{ "rail-tracks", "Keeping a drone lane's tracks apart", {}, {} };
 		PluginMap::Feature g_stockFeature{ "rail-stock", "What the storage on a rail's network holds", {}, {} };
+		PluginMap::Feature g_requestsFeature{ "rail-requests", "Where a request's items are picked up and delivered", {}, {} };
 		bool g_resolved         = false;
 		bool g_capacityResolved = false;
 		bool g_buildingResolved = false;
 		bool g_trackResolved    = false;
 		bool g_stockResolved    = false;
+		bool g_requestsResolved = false;
 		bool g_faulted          = false;
 		bool g_capacityFaulted  = false;
 		bool g_buildingFaulted  = false;
@@ -234,6 +248,7 @@ namespace Waila::RailMass
 		// Bounds on what one array can hold, so a corrupt count cannot run away.
 		constexpr int32_t kMaxArray  = 4096;
 		constexpr size_t  kMaxWanted = 64;
+		constexpr int32_t kMaxDeliveries = 16;
 
 		bool ResolveSize(IPluginHookScanner* scanner, const IPluginSelf* self, SizeRow& row)
 		{
@@ -351,10 +366,12 @@ namespace Waila::RailMass
 
 		// LogisticsType values (ECrMassLogisticsType) the walk tells apart.
 		constexpr uint8_t kTypeStorage        = 1;
+		constexpr uint8_t kTypeBoth           = 2;   // makes and takes (ProducerConsumer): a Storage Depot v.2 is one
 		constexpr uint8_t kTypeLineNode       = 5;
 		constexpr uint8_t kTypeLineConnection = 6;
 
 		const uint8_t* SharedFragment(const void* manager, Entity entity, const UScriptStruct* type);
+		void ReadCrafterImpl(Entity building, CrafterState& out);
 
 		// WAILA-RAIL-DIAG BEGIN
 		// Why a fragment read of an entity came back empty.
@@ -372,6 +389,22 @@ namespace Waila::RailMass
 			return "entity has no such fragment";
 		}
 		// WAILA-RAIL-DIAG END
+
+		// A building of the type that makes and takes is storage when it has no
+		// recipe to run and keeps an inventory: items rest there, and the rails
+		// out of it carry what the rails into it brought (INFERRED from the
+		// depots in the rail dumps, which were type 2 with no recipe).
+		bool HoldsStockOnly(const void* manager, Entity building)
+		{
+			CrafterState crafter;
+			ReadCrafterImpl(building, crafter);
+			// WAILA-RAIL-DIAG BEGIN
+			RAIL_DIAG_LINE("    node %s: LogisticsType 2 depot check: recipe %s, inventory fragment %s -> %s", RailDiag::Id(building).c_str(),
+				crafter.recipe ? "set" : "none", Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) ? "present" : "MISSING",
+				!crafter.recipe && Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) ? "STORAGE" : "machine");
+			// WAILA-RAIL-DIAG END
+			return !crafter.recipe && Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) != nullptr;
+		}
 
 		void ReadEndsImpl(const void* manager, const UWorld* world, Entity rail, Entity& start, Entity& end, bool& twoWay)
 		{
@@ -414,9 +447,10 @@ namespace Waila::RailMass
 			const uint8_t type = ReadAt<uint8_t>(logistics, mLogisticsType.Offset());
 			using RailNetwork::NodeKind;
 			out.kind = type == kTypeLineNode || type == kTypeLineConnection ? NodeKind::PassThrough
-			         : type == kTypeStorage ? NodeKind::Storage : NodeKind::Machine;
+			         : type == kTypeStorage || (type == kTypeBoth && HoldsStockOnly(manager, node)) ? NodeKind::Storage
+			         : NodeKind::Machine;
 			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("    node %s: logistics parameters found, LogisticsType=%u (1 storage, 5 line node, 6 line connection) -> %s",
+			RAIL_DIAG_LINE("    node %s: logistics parameters found, LogisticsType=%u (1 storage, 2 makes and takes, 5 line node, 6 line connection) -> %s",
 				RailDiag::Id(node).c_str(), static_cast<unsigned>(type), RailNetwork::DiagKind(out.kind));
 			// WAILA-RAIL-DIAG END
 
@@ -470,9 +504,43 @@ namespace Waila::RailMass
 			}
 		}
 
+		// A request's item, and with the requests feature its type and the
+		// deliveries assigned to it.
+		void ReadRequestData(const uint8_t* data, const UWorld* world, std::vector<RequestView>& out)
+		{
+			UAuItemDataBase* item = ItemOf(data + mWantedItem.Offset());
+			if (!item)
+				return;
+			RequestView view;
+			view.wanted = item;
+			if (g_requestsResolved && g_requestsFeature.On())
+			{
+				view.store = ReadAt<uint8_t>(data, mRequestType.Offset()) == 1;
+				const RawArray runs = ArrayAt(data, mRuntimeData.Offset());
+				// WAILA-RAIL-DIAG BEGIN
+				RAIL_DIAG_LINE("      request: wants %s, type=%u (%s), %d runtime run(s)", item->GetName().c_str(),
+					static_cast<unsigned>(ReadAt<uint8_t>(data, mRequestType.Offset())), view.store ? "store" : "acquire/other", runs.num);
+				// WAILA-RAIL-DIAG END
+				for (int32_t i = 0; i < runs.num && i < kMaxDeliveries; ++i)
+				{
+					const uint8_t* run = runs.data + static_cast<size_t>(i) * kRuntimeSize.size;
+					Delivery delivery;
+					delivery.source      = HandleOf(run + mItemSource.Offset(), world);
+					delivery.destination = HandleOf(run + mItemDestination.Offset(), world);
+					// WAILA-RAIL-DIAG BEGIN
+					RAIL_DIAG_LINE("        run %d: ItemSource=%s ItemDestination=%s%s", i, RailDiag::Id(delivery.source).c_str(),
+						RailDiag::Id(delivery.destination).c_str(), delivery.source || delivery.destination ? "" : " (both empty: dropped)");
+					// WAILA-RAIL-DIAG END
+					if (delivery.source || delivery.destination)
+						view.deliveries.push_back(delivery);
+				}
+			}
+			out.push_back(std::move(view));
+		}
+
 		// Pending requests hold their data in place; the others are entities
 		// of their own.
-		void ReadWantedImpl(Entity building, std::vector<UAuItemDataBase*>& out)
+		void ReadRequestsImpl(Entity building, std::vector<RequestView>& out)
 		{
 			const UWorld* world = PluginSdkRuntime::GetWorld();
 			const void* manager = Manager(world);
@@ -482,8 +550,7 @@ namespace Waila::RailMass
 
 			const RawArray pending = ArrayAt(container, mPending.Offset());
 			for (int32_t i = 0; i < pending.num && out.size() < kMaxWanted; ++i)
-				if (UAuItemDataBase* item = ItemOf(pending.data + static_cast<size_t>(i) * kRequestSize.size + mWantedItem.Offset()))
-					out.push_back(item);
+				ReadRequestData(pending.data + static_cast<size_t>(i) * kRequestSize.size, world, out);
 
 			const UScriptStruct* requestType = Found(g_requestStruct, "CrLogisticsRequestFragment");
 			const RawArray requests = ArrayAt(container, mRequests.Offset());
@@ -491,8 +558,8 @@ namespace Waila::RailMass
 			{
 				const Entity entity = HandleOf(requests.data + static_cast<size_t>(i) * kPersistentSize.size, world);
 				const uint8_t* request = Fragment(manager, entity, requestType);
-				if (UAuItemDataBase* item = request ? ItemOf(request + mRequestData.Offset() + mWantedItem.Offset()) : nullptr)
-					out.push_back(item);
+				if (request)
+					ReadRequestData(request + mRequestData.Offset(), world, out);
 			}
 		}
 
@@ -719,8 +786,13 @@ namespace Waila::RailMass
 		for (const Member* member : kStockMembers)
 			g_stockFeature.keys.push_back(member->spec.key);
 
+		g_requestsFeature.keys = core;
+		g_requestsFeature.keys.push_back(kRuntimeSize.key);
+		for (const Member* member : kRequestMembers)
+			g_requestsFeature.keys.push_back(member->spec.key);
+
 		return PluginMap::DeclareFeatures(scanner, self, g_feature, g_capacityFeature, g_buildingFeature,
-			g_trackFeature, g_stockFeature);
+			g_trackFeature, g_stockFeature, g_requestsFeature);
 	}
 
 	void Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
@@ -762,6 +834,9 @@ namespace Waila::RailMass
 		bool stock = ResolveSize(scanner, self, kContainerSize);
 		for (Member* member : kStockMembers)
 			stock = resolveMember(*member) && stock;
+		bool requests = ResolveSize(scanner, self, kRuntimeSize);
+		for (Member* member : kRequestMembers)
+			requests = resolveMember(*member) && requests;
 
 		const uintptr_t getSubsystem = ResolveFunction(scanner, self, kKeyGetSubsystem, kPatGetSubsystem, kAtGetSubsystem);
 		const uintptr_t getFragment  = ResolveFunction(scanner, self, kKeyGetFragment, kPatGetFragment, kAtGetFragment);
@@ -781,6 +856,7 @@ namespace Waila::RailMass
 		g_buildingResolved = building;
 		g_trackResolved    = tracks;
 		g_stockResolved    = stock;
+		g_requestsResolved = requests;
 		if (!g_resolved || !g_feature.On())
 			LOG_WARN("RailMass: rail sources are off on this build; the rest of WAILA is unaffected");
 		else if (!g_capacityResolved || !g_capacityFeature.On())
@@ -791,6 +867,8 @@ namespace Waila::RailMass
 			LOG_WARN("RailMass: lane tracks are not told apart on this build; a rail on a lane lists every track's machines, the rest of its card is unaffected");
 		if (g_resolved && g_feature.On() && (!g_stockResolved || !g_stockFeature.On()))
 			LOG_WARN("RailMass: storage stock is off on this build; a rail shows no stock lines, the rest of its card is unaffected");
+		if (g_resolved && g_feature.On() && (!g_requestsResolved || !g_requestsFeature.On()))
+			LOG_WARN("RailMass: request deliveries are off on this build; a rail does not name the buildings behind its requests, the rest of its card is unaffected");
 	}
 
 	bool Available()
@@ -843,12 +921,12 @@ namespace Waila::RailMass
 		return Guarded([&] { ReadNodeImpl(node, out, found); }) && found;
 	}
 
-	bool ReadWanted(Entity building, std::vector<UAuItemDataBase*>& out)
+	bool ReadRequests(Entity building, std::vector<RequestView>& out)
 	{
 		out.clear();
 		if (!Available())
 			return false;
-		return Guarded([&] { ReadWantedImpl(building, out); });
+		return Guarded([&] { ReadRequestsImpl(building, out); });
 	}
 
 	bool ReadCrafter(Entity building, CrafterState& out)

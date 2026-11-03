@@ -313,9 +313,9 @@ namespace Waila::UI
 
 	namespace
 	{
-		// Past this the list stops being a glance: item rows and From/To rows
-		// together, like the stock slots on a container.
-		constexpr size_t kMaxRateRows = 6;
+		// Past this the list stops being a glance: item rows and their From, To,
+		// stock and totals lines together.
+		constexpr size_t kMaxRateRows = 12;
 
 		std::string PerMin(float v)
 		{
@@ -330,39 +330,36 @@ namespace Waila::UI
 			Draw::FormatNumber(buf, sizeof(buf), v);
 			return buf;
 		}
-	}
 
-	namespace
-	{
-		// What the storage on the rail's network holds of an item: "4.0k in
-		// storage", or "12k in 3 storages".
-		std::string StockText(const Waila::RailRateEntry& r)
+		// An item's lines under its name, in order: where it comes from, where it
+		// goes, what the storage on the network holds of it, then its totals. The
+		// first three are left out when not known.
+		struct ItemLines
 		{
-			char count[24];
-			Draw::FormatNumber(count, sizeof(count), static_cast<float>(r.stored));
-			return std::string(count) + (r.storages > 1 ? " in " + std::to_string(r.storages) + " storages" : " in storage");
-		}
+			RateRow              head;
+			std::vector<RateRow> details;
+			RateRow              totals;
+		};
 
-		// The machines of one name making an item, or taking it, under its row:
-		// what they make or take running full out under max and right now under
-		// now, summed over the line: a maker 0 while stalled (red), a consumer
-		// 0 while it is not asking for the item. min is the rail's, so it stays
-		// blank.
-		RateRow PeerRow(const Waila::RailPeerEntry& p)
+		ItemLines LinesOf(const Waila::RailRateEntry& r)
 		{
-			RateRow row;
-			row.icon = Icons::ForItem(p.itemData);
-			row.name = std::string(p.source ? "From " : "To ")
-				+ (p.count > 1 ? std::to_string(p.count) + "x " : std::string()) + p.buildingName;
-			if (p.perMinFull >= 0.0f)
-				row.max = PerMin(p.perMinFull);
-			if (p.perMinNow >= 0.0f)
+			ItemLines lines;
+			lines.head.icon = Icons::ForItem(r.itemData);
+			lines.head.name = r.displayName;
+			if (!r.from.empty())
+				lines.details.push_back({ nullptr, "From " + r.from });
+			if (!r.to.empty())
+				lines.details.push_back({ nullptr, "To " + r.to });
+			if (r.stored >= 0 && !r.storedIn.empty())
 			{
-				row.now = PerMin(p.perMinNow);
-				if (p.source && p.perMinNow <= 0.0f)
-					row.tone = Health::Bad;
+				char count[24];
+				Draw::FormatNumber(count, sizeof(count), static_cast<float>(r.stored));
+				lines.details.push_back({ nullptr, std::string("Stored ") + count + " in " + r.storedIn });
 			}
-			return row;
+			// "\xC2\xB7" is a middle dot.
+			lines.totals.name = "min " + PerMin(r.perMinMin) + " \xC2\xB7 max " + PerMin(r.perMinMax)
+				+ " \xC2\xB7 current " + PerMin(r.perMinNow) + " /min";
+			return lines;
 		}
 	}
 
@@ -373,50 +370,27 @@ namespace Waila::UI
 		out.hasRates = true;
 		out.chip     = info.filterName;
 
-		// Each item's rows together: its rates, the machines making it and
-		// taking it, and its stock. An item only the storage holds is one row.
-		// When they do not all fit, every item keeps its own row and the
-		// machine and stock rows fill the room left, first item first.
-		std::vector<std::vector<RateRow>> items;
+		// Each item's lines together. When they do not all fit, every item keeps
+		// its name and totals and the From, To and stock lines fill the room
+		// left, first item first.
+		std::vector<ItemLines> items;
 		size_t total = 0;
 		for (const Waila::RailRateEntry& r : info.rates)
 		{
-			std::vector<RateRow>& rows = items.emplace_back();
-			RateRow row;
-			row.icon = Icons::ForItem(r.itemData);
-			if (!r.made)
-			{
-				row.name = r.displayName + ": " + StockText(r);
-				rows.push_back(std::move(row));
-				++total;
-				continue;
-			}
-			row.name = r.displayName;
-			row.min  = PerMin(r.perMinMin);
-			row.now  = PerMin(r.perMinNow);
-			row.max  = PerMin(r.perMinMax);
-			rows.push_back(std::move(row));
-			for (const Waila::RailPeerEntry& p : r.peers)
-				rows.push_back(PeerRow(p));
-			if (r.stored >= 0 && r.storages > 0)
-			{
-				RateRow stock;
-				stock.icon = Icons::ForItem(r.itemData);
-				stock.name = StockText(r);
-				rows.push_back(std::move(stock));
-			}
-			total += rows.size();
+			items.push_back(LinesOf(r));
+			total += 2 + items.back().details.size();
 		}
-		size_t room  = kMaxRateRows > items.size() ? kMaxRateRows - items.size() : 0;
+		size_t room  = kMaxRateRows > 2 * items.size() ? kMaxRateRows - 2 * items.size() : 0;
 		size_t shown = 0;
-		for (std::vector<RateRow>& rows : items)
+		for (ItemLines& lines : items)
 		{
-			if (shown >= kMaxRateRows)
+			if (shown + 2 > kMaxRateRows)
 				break;
-			out.rates.push_back(std::move(rows[0]));
-			++shown;
-			for (size_t i = 1; i < rows.size() && room > 0; ++i, --room, ++shown)
-				out.rates.push_back(std::move(rows[i]));
+			out.rates.push_back(std::move(lines.head));
+			for (size_t i = 0; i < lines.details.size() && room > 0; ++i, --room, ++shown)
+				out.rates.push_back(std::move(lines.details[i]));
+			out.rates.push_back(std::move(lines.totals));
+			shown += 2;
 		}
 		const size_t more = total - shown;
 
@@ -436,7 +410,6 @@ namespace Waila::UI
 			out.statusText = buf;
 		}
 
-		out.footLeft = "items / min: min, now, max";
 		if (more > 0)
 		{
 			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
@@ -446,14 +419,13 @@ namespace Waila::UI
 		// WAILA-RAIL-DIAG BEGIN
 		if (RailDiag::CardPending())
 		{
-			RAIL_DIAG_CARD("card: header \"%s\", %zu row(s) shown, footer-right \"%s\", note \"%s\" (%s)", out.statusText.c_str(),
+			RAIL_DIAG_CARD("card: header \"%s\", %zu line(s) shown, footer-right \"%s\", note \"%s\" (%s)", out.statusText.c_str(),
 				out.rates.size(), out.footRight.c_str(), out.ratesNote.c_str(),
-				!out.rates.empty() ? "rows shown, no note"
+				!out.rates.empty() ? "lines shown, no note"
 				: info.fromMass && !info.note.empty() ? "note from RailDetector::GetRailInfo"
 				: "fallback in Card::FromRail: not read from the Mass data, or no note");
 			for (const RateRow& row : out.rates)
-				RAIL_DIAG_CARD("  card row \"%s\" min=%s now=%s max=%s%s", row.name.c_str(), row.min.c_str(), row.now.c_str(),
-					row.max.c_str(), row.tone == Health::Bad ? " (red)" : "");
+				RAIL_DIAG_CARD("  card line \"%s\"%s", row.name.c_str(), row.icon ? " (icon)" : "");
 			RailDiag::CardDone();
 		}
 		// WAILA-RAIL-DIAG END

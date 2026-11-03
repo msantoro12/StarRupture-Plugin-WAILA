@@ -16,12 +16,13 @@ namespace SDK { class AActor; class UAuItemDataBase; class UAuItemRecipeData; cl
 // machine's crafting fragment and requests say what it makes and wants.
 //
 // Every member of every Mass fragment and every struct stride comes from the
-// loader by name (ResolveField). Keys are declared as five features: "rail
+// loader by name (ResolveField). Keys are declared as six features: "rail
 // sources" (Waila::Features::RailSources), "rail capacity", "rail
-// buildings", "rail tracks" and "rail stock". The last four list the same
-// core keys, so a name the game no longer has turns off only what it feeds:
-// the sources, the max, the names of the buildings at the rail's ends,
-// keeping a lane's tracks apart, or the stock lines.
+// buildings", "rail tracks", "rail stock" and "rail requests". The last five
+// list the same core keys, so a name the game no longer has turns off only
+// what it feeds: the sources, the max, the names of the buildings at the
+// rail's ends, keeping a lane's tracks apart, the stock lines, or the
+// buildings named behind a request.
 namespace Waila { struct StoredItemEntry; }
 
 namespace Waila::RailMass
@@ -67,8 +68,24 @@ namespace Waila::RailMass
 	bool ReadEnds(Entity rail, Entity& start, Entity& end, bool& twoWay);
 	// What a node is and the rails at its sockets, each with its far end.
 	bool ReadNode(Entity node, RailNetwork::NodeView& out);
-	// The items a building has an open request for right now.
-	bool ReadWanted(Entity building, std::vector<SDK::UAuItemDataBase*>& out);
+	// The open requests of a building right now: the item each one wants and,
+	// when the deliveries are read, whether it ships items out (Store) or brings
+	// them in (Acquire) and where each assigned delivery picks up and brings to
+	// (0 when not known). The item pointers are valid only in the tick they were read.
+	struct Delivery
+	{
+		Entity source      = 0;
+		Entity destination = 0;
+	};
+
+	struct RequestView
+	{
+		SDK::UAuItemDataBase* wanted = nullptr;
+		bool                  store  = false;
+		std::vector<Delivery> deliveries;
+	};
+
+	bool ReadRequests(Entity building, std::vector<RequestView>& out);
 	bool ReadCrafter(Entity building, CrafterState& out);
 
 	// The building a Mass entity is, from its building parameters (the entity

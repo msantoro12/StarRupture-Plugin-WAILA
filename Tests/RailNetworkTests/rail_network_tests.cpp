@@ -442,9 +442,16 @@ namespace
 		return part;
 	}
 
-	// The From/To lines come from the same parts as the totals, so a line's
-	// full rates add up to the row's output: buildings of a name merge, each
-	// building once, sources first, and items not on the rail get no line.
+	FlowPart InStorage(FlowPart part, const std::string& name)
+	{
+		part.name    = name;
+		part.storage = true;
+		return part;
+	}
+
+	// The From/To lines come from the same parts as the totals: buildings of a
+	// name merge, each building once, sources first, the biggest kind first at
+	// each end, and items not on the rail get no line.
 	void TestEndLines()
 	{
 		const std::vector<FlowPart> parts = {
@@ -454,19 +461,67 @@ namespace
 			Named(Maker(2, "Plate", 120), "Fabricator", 0),   // found twice
 			Named(Maker(3, "Plate", 120), "Fabricator", -1),  // state unread
 			Named(Taker(11, "Plate", 90), "Mega Press", 90),
+			Named(Taker(12, "Plate", 10), "Furnace v.2", 0),
+			Named(Taker(13, "Plate", 10), "Furnace v.2", 0),
 			Named(Taker(10, "Acid", 10), "Furnace", 0),       // not made here
 		};
 		const std::vector<EndRow> rows = GroupEnds(parts, { "Plate" });
-		Check(rows.size() == 3, "fabricators, furnace, press (got " + std::to_string(rows.size()) + ")");
-		if (rows.size() != 3)
+		Check(rows.size() == 4, "fabricators, then furnace v.2, furnace, press (got " + std::to_string(rows.size()) + ")");
+		if (rows.size() != 4)
 			return;
 		Check(rows[0].source && rows[0].name == "Fabricator" && rows[0].count == 3, "3x Fabricator first, counted once each");
-		Check(Near(rows[0].full, 360) && Near(rows[0].now, 120), "fabricators: 360 full, 120 now (unread left out)");
-		Check(!rows[1].source && rows[1].name == "Furnace" && Near(rows[1].full, 10) && Near(rows[1].now, 0), "furnace: 10, not requesting");
-		Check(!rows[2].source && rows[2].name == "Mega Press" && Near(rows[2].full, 90), "press: 90");
+		Check(!rows[1].source && rows[1].name == "Furnace v.2" && rows[1].count == 2, "the biggest kind of taker first");
+		Check(!rows[2].source && rows[2].name == "Furnace" && rows[2].count == 1, "kinds with different names stay apart");
+		Check(!rows[3].source && rows[3].name == "Mega Press" && rows[3].count == 1, "press last, in the order seen");
 
-		const std::vector<ItemFlow> flows = SumFlows(parts, 480.0f);
-		Check(Near(FlowOf(flows, "Plate")->output, rows[0].full), "the row's output is the From lines' full rates");
+		Check(EndsLine({ rows[0] }) == "3x Fabricator", "a kind reads \"3x Fabricator\"");
+		Check(EndsLine({ rows[1], rows[2] }) == "2x Furnace v.2, Furnace", "a single building has no count");
+		std::vector<EndRow> many = { rows[0], rows[1], rows[2], rows[3] };
+		Check(EndsLine(many) == "3x Fabricator, 2x Furnace v.2, Furnace, +1 more", "three kinds at most, then +N more");
+		Check(EndsLine({}).empty(), "no building, no line");
+	}
+
+	// Storage holds an item and neither makes nor takes it: it is listed at an
+	// end only when no building is, a kind reached through storage says so, and
+	// the totals count it as a source that makes nothing.
+	void TestStorageEnds()
+	{
+		FlowPart viaDepot = Named(Maker(1, "Plate", 30), "Assembler", 30);
+		viaDepot.via = "Storage Depot v.2";
+		FlowPart viaDepot2 = viaDepot;
+		viaDepot2.building = 2;
+		const std::vector<FlowPart> parts = {
+			viaDepot, viaDepot2,
+			InStorage({ 7, "Plate", true }, "Storage Depot v.2"),                // holds plates, makers feed it
+			InStorage({ 7, "Ore", true }, "Storage Depot v.2"),                  // holds ore, nothing makes it
+			Named(Taker(10, "Plate", 10), "Furnace", 0),
+			InStorage({ 8, "Plate", false }, "Storage Depot"),                   // downstream, a furnace takes plates
+			InStorage({ 8, "Ore", false }, "Storage Depot"),                     // downstream, nothing takes ore
+		};
+		const std::vector<EndRow> rows = GroupEnds(parts, { "Plate", "Ore" });
+		Check(rows.size() == 4, "plate from, plate to, ore from, ore to (got " + std::to_string(rows.size()) + ")");
+		if (rows.size() != 4)
+			return;
+		Check(rows[0].item == "Plate" && rows[0].source && rows[0].name == "Assembler" && rows[0].count == 2
+		      && rows[0].via == "Storage Depot v.2", "2x Assembler via the depot; the depot itself is not a source of plate");
+		Check(EndsLine({ rows[0] }) == "2x Assembler via Storage Depot v.2", "the line says via");
+		Check(rows[1].item == "Ore" && rows[1].source && rows[1].name == "Storage Depot v.2", "an item only storage holds: from the depot");
+		Check(rows[2].item == "Plate" && !rows[2].source && rows[2].name == "Furnace", "plate goes to the furnace, not the depot after it");
+		Check(rows[3].item == "Ore" && !rows[3].source && rows[3].name == "Storage Depot", "no taker for ore: it goes to the depot");
+
+		const std::vector<ItemFlow> flows = SumFlows({
+			InStorage({ 7, "Ore", true }, "Storage Depot v.2"),
+			Named(Taker(10, "Ore", 10), "Furnace", 10),
+			InStorage({ 8, "Ore", false }, "Storage Depot"),
+			Maker(1, "Plate", 30), InStorage({ 7, "Plate", true }, "Storage Depot v.2"),
+		}, 480.0f);
+		Check(flows.size() == 2, "an item only storage holds is a row (got " + std::to_string(flows.size()) + ")");
+		const ItemFlow* ore = FlowOf(flows, "Ore");
+		Check(ore && ore->sources == 0 && ore->consumers == 1, "storage is not counted as a source or a consumer");
+		Check(ore && Near(ore->max, 0) && Near(ore->min, 0) && Near(ore->now, 0), "storage-only item: totals from production only, all 0");
+		const ItemFlow* plate = FlowOf(flows, "Plate");
+		Check(plate && Near(plate->max, 30) && Near(plate->min, 30), "stock does not add to what makers put out");
+		Check(flows.front().item == "Plate", "items with production come first");
 	}
 
 	// A fake network for FindAttached: node id to its kind and links.
@@ -506,7 +561,8 @@ namespace
 	// storage S, then pole 16 to consumer C. A branch off pole 11 feeds
 	// consumer B; machine X sends into pole 12 from the side; pole 13 has a
 	// rail back out to consumer Y. The aimed rail runs 14 to 15. One far node
-	// (99) cannot be read, as if it were gone.
+	// (99) cannot be read, as if it were gone. Only C is downstream of the
+	// rail: B and Y take off the line before it.
 	void TestAttachedLongLine()
 	{
 		const uint64_t M1 = 1, M2 = 2, X = 3, B = 4, C = 5, Y = 6, S = 7;
@@ -525,20 +581,20 @@ namespace
 		net.Rail(99, 13);
 		net.nodes.erase(99);
 
-		const Attached found = FindAttached({ 14 }, net, 1024, 256);
+		const Attached found = FindAttached({ 14 }, { 15 }, net, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ M1, M2, X }, "every maker up the line, through every segment");
-		Check(Set(found.downstream) == std::set<uint64_t>{ B, C, Y }, "every consumer they feed, branches and past storage");
+		Check(Set(found.downstream) == std::set<uint64_t>{ C }, "only the consumers after the rail's end, past storage");
 		Check(!found.truncated, "a small network is not truncated");
+		Check(found.downstreamStorage == std::vector<uint64_t>{ S }, "the storage after the rail is walked through");
 
-		const Attached capped = FindAttached({ 14 }, net, 4, 256);
+		const Attached capped = FindAttached({ 14 }, { 15 }, net, 4, 256);
 		Check(capped.truncated, "the node cap sets truncated");
 	}
 
-	// A rail straight out of a machine; a two-way rail; a loop.
 	// A production line on one rail spine: M1 feeds poles 11 to 15, and M2
-	// takes off pole 12 and puts its output back on at pole 13, so it feeds
-	// the line and takes from it. The same for a storage hub S that F and B
-	// fill and B takes from.
+	// takes off pole 12 and puts its output back on at pole 13: it feeds the
+	// rail that starts at 13, and does not take from it. The same for a storage
+	// hub S that machines 1 and 2 fill and 2 takes from.
 	void TestAttachedSpine()
 	{
 		FakeNet net;
@@ -551,9 +607,9 @@ namespace
 			net.Rail(pole, pole + 1);
 		net.Rail(12, 2);
 		net.Rail(2, 13);
-		Attached found = FindAttached({ 13 }, net, 1024, 256);
+		Attached found = FindAttached({ 13 }, { 14 }, net, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ 1, 2 }, "both makers on a spine are upstream");
-		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "a maker taking off the spine is a consumer too");
+		Check(found.downstream.empty(), "a maker taking off the spine before the rail does not take from it");
 
 		FakeNet hub;
 		hub.Node(1, NodeKind::Machine);
@@ -564,9 +620,11 @@ namespace
 		hub.Rail(2, 30);
 		hub.Rail(30, 2);
 		hub.Rail(30, 20);
-		found = FindAttached({ 30 }, hub, 1024, 256);
+		found = FindAttached({ 30 }, { 20 }, hub, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ 1, 2 }, "both machines filling a hub are upstream");
-		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "the machine taking from the hub is a consumer");
+		Check(found.downstream.empty(), "the rail out of the hub leads to no consumer");
+		found = FindAttached({ 30 }, { 2 }, hub, 1024, 256);
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "the machine at the rail's end is a consumer");
 	}
 
 	// A drone lane L is one node with a socket pair per track. Maker M1 feeds
@@ -587,14 +645,60 @@ namespace
 		net.Rail(L, C1, 103, 1, 0);
 		net.Rail(L, C2, 104, 2, 0);
 
-		Attached found = FindAttached({ L }, net, 1024, 256, 103);
+		Attached found = FindAttached({ L }, { C1 }, net, 1024, 256, 103);
 		Check(Set(found.upstream) == std::set<uint64_t>{ M1 }, "a lane track has its own maker only");
 		Check(Set(found.downstream) == std::set<uint64_t>{ C1 }, "...and its own consumer");
 		Check(found.upstreamStorage == std::vector<uint64_t>{ S }, "the storage up the track is listed");
-		Check(found.downstreamStorage == std::vector<uint64_t>{ S }, "...and walked again from its maker");
+		Check(found.downstreamStorage.empty(), "...and no storage after the rail");
 
-		found = FindAttached({ L }, net, 1024, 256);
+		found = FindAttached({ L }, { C1 }, net, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ M1, M2 }, "with no rail named, every track meets");
+	}
+
+	// A depot D fills from three assemblers A1..A3 through pole 10 and from
+	// maker F directly; the aimed rail leaves D through pole 11 to a press P
+	// and past a second depot E to a smelter T. A third assembler G feeds
+	// the line after the rail through a pole 12 into E. The makers behind the
+	// depot are found, the ones through it say so, the depot is neither maker
+	// nor taker, and the stock is read from both depots.
+	void TestAttachedThroughStorage()
+	{
+		const uint64_t A1 = 1, A2 = 2, A3 = 3, F = 4, P = 5, T = 6, G = 7, D = 20, E = 21;
+		FakeNet net;
+		for (uint64_t m : { A1, A2, A3, F, P, T, G })
+			net.Node(m, NodeKind::Machine);
+		net.Node(D, NodeKind::Storage);
+		net.Node(E, NodeKind::Storage);
+		for (uint64_t p : { uint64_t(10), uint64_t(11), uint64_t(12), uint64_t(13) })
+			net.Node(p, NodeKind::PassThrough);
+		net.Rail(A1, 10); net.Rail(A2, 10); net.Rail(A3, 10);
+		net.Rail(10, D);
+		net.Rail(F, D);
+		net.Rail(D, 11);          // the aimed rail: D to pole 11
+		net.Rail(11, P);
+		net.Rail(11, 13);
+		net.Rail(13, E);
+		net.Rail(E, T);
+		net.Rail(G, 12); net.Rail(12, E);
+
+		const Attached found = FindAttached({ D }, { 11 }, net, 1024, 256);
+		Check(Set(found.upstream) == std::set<uint64_t>{ A1, A2, A3, F }, "the makers behind the depot are found");
+		Check(found.upstreamStorage == std::vector<uint64_t>{ D }, "the depot is walked through, not a machine");
+		Check(found.upstreamVia.count(A1) && found.upstreamVia.at(A1) == D && found.upstreamVia.at(A3) == D
+		      && found.upstreamVia.count(F) && found.upstreamVia.at(F) == D, "every maker was reached through the depot");
+		Check(Set(found.downstream) == std::set<uint64_t>{ P, T }, "the takers after the rail, past the second depot");
+		Check(found.downstreamStorage == std::vector<uint64_t>{ E }, "the second depot is walked through too");
+		Check(!Set(found.downstream).count(G) && !Set(found.downstream).count(A1), "machines feeding the second depot are not takers");
+
+		// Depots in a chain are passed through both ways.
+		FakeNet chain;
+		chain.Node(1, NodeKind::Machine); chain.Node(2, NodeKind::Machine);
+		chain.Node(30, NodeKind::Storage); chain.Node(31, NodeKind::Storage);
+		chain.Node(40, NodeKind::PassThrough);
+		chain.Rail(1, 30); chain.Rail(30, 31); chain.Rail(31, 40); chain.Rail(40, 2);
+		const Attached passed = FindAttached({ 31 }, { 40 }, chain, 1024, 256);
+		Check(Set(passed.upstream) == std::set<uint64_t>{ 1 } && passed.upstreamStorage.size() == 2, "a chain of depots is passed through");
+		Check(Set(passed.downstream) == std::set<uint64_t>{ 2 }, "...and the taker after the rail is found");
 	}
 
 	void TestAttachedEdges()
@@ -605,9 +709,9 @@ namespace
 		net.Node(10, NodeKind::PassThrough);
 		net.Rail(1, 10);
 		net.Rail(10, 2);
-		Attached found = FindAttached({ 1 }, net, 1024, 256);
+		Attached found = FindAttached({ 1 }, { 10 }, net, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ 1 }, "a rail out of a machine has that machine upstream");
-		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "...and what it feeds downstream");
+		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "...and what its end feeds downstream");
 
 		FakeNet two;
 		two.Node(1, NodeKind::Machine);
@@ -618,7 +722,7 @@ namespace
 		two.Rail(10, 11, true);
 		two.Rail(11, 10);   // a loop back
 		two.Rail(11, 2);
-		found = FindAttached({ 10, 11 }, two, 1024, 256);
+		found = FindAttached({ 10, 11 }, { 11, 10 }, two, 1024, 256);
 		Check(Set(found.upstream) == std::set<uint64_t>{ 1 }, "a two-way rail walks back from both ends");
 		Check(Set(found.downstream) == std::set<uint64_t>{ 2 }, "a loop is walked once");
 	}
@@ -645,6 +749,8 @@ int main()
 	TestAttachedEdges();
 	TestAttachedSpine();
 	TestAttachedLaneTracks();
+	TestAttachedThroughStorage();
+	TestStorageEnds();
 
 	if (g_failures == 0)
 		std::printf("All rail network tests passed.\n");
