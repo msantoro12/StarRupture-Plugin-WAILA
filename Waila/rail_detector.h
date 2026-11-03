@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -12,19 +13,35 @@ namespace Waila
 	// and what the storage on the network holds of it. Rates are items per
 	// minute, each capped by what the rail carries; a negative value means it
 	// could not be read, and the card shows "?" for it.
+	// A stretch of an entry's From or To text: byte offsets, end exclusive.
+	struct RailTextSpan
+	{
+		size_t begin = 0;
+		size_t end   = 0;
+	};
+
 	struct RailRateEntry
 	{
 		SDK::UAuItemDataBase* itemData = nullptr;
 		std::string           displayName;
-		float                 perMinMax = -1.0f;   // the makers' output, nobody pulling
-		float                 perMinMin = -1.0f;   // left with every consumer downstream running full out
-		float                 perMinNow = -1.0f;   // left with the consumers requesting it right now
+		float                 perMinMax = -1.0f;   // what the makers put out at full speed
+		float                 perMinMin = -1.0f;   // what they can make with the inputs they get now
+		float                 perMinNow = -1.0f;   // moving now: what the makers put out and the takers requesting it want, the smaller
+		bool                  plusUnknown = false; // max and now are the makers' part: a Cargo Receiver brings more at no known rate
 
 		// The kinds of building making and taking it, names only, from the
 		// game's own Mass data (rail_mass.h): "2x Furnace, Furnace v.2". Empty
 		// when not known.
 		std::string           from;
 		std::string           to;
+
+		// The kinds in `from` whose makers are starved (missing an input of their
+		// own), and, when the takers requesting now want more than the rail
+		// carries, how many items a minute more (perMinShort, 0 when none) and
+		// the kinds in `to`, all of them.
+		std::vector<RailTextSpan> fromStarved;
+		std::vector<RailTextSpan> toShort;
+		float                     perMinShort = 0.0f;
 
 		// What the storage the network passes through holds of it, summed over
 		// those storages, and their name; negative when not read. Storage is

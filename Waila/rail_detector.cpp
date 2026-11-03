@@ -434,6 +434,7 @@ namespace Waila
 				out.starvedFeeder = out.starvedFeeder || crafter.starved;
 				RailNetwork::FlowPart part{ machine, unique, true, full };
 				part.now  = full >= 0.0f ? (crafter.stalled ? 0.0f : full) : -1.0f;
+				part.starved = crafter.starved;
 				part.name = nameOf(machine);
 				const auto through = attached.upstreamVia.find(machine);
 				if (through != attached.upstreamVia.end())
@@ -783,6 +784,7 @@ namespace Waila
 			entry.perMinMax = flow.max;
 			entry.perMinMin = flow.min;
 			entry.perMinNow = flow.now;
+			entry.plusUnknown = flow.plusUnknown;
 			DescribeItem(flow.item, entry.displayName, entry.itemData);
 
 			std::vector<RailNetwork::EndRow> fromRows, toRows;
@@ -793,8 +795,18 @@ namespace Waila
 				(end.source ? fromRows : toRows).push_back(end);
 				(end.source ? outInfo.fromCount : outInfo.destCount) += end.count;
 			}
-			entry.from = RailNetwork::EndsLine(fromRows);
-			entry.to   = RailNetwork::EndsLine(toRows);
+			std::vector<RailNetwork::EndSpan> fromSpans, toSpans;
+			entry.from = RailNetwork::EndsLine(fromRows, 3, &fromSpans);
+			entry.to   = RailNetwork::EndsLine(toRows, 3, &toSpans);
+			for (const RailNetwork::EndSpan& span : fromSpans)
+				if (span.starved)
+					entry.fromStarved.push_back({ span.begin, span.end });
+			if (flow.short_)
+			{
+				entry.perMinShort = flow.shortBy;
+				for (const RailNetwork::EndSpan& span : toSpans)
+					entry.toShort.push_back({ span.begin, span.end });
+			}
 
 			const auto held = g_cache.stock.find(flow.item);
 			if (held != g_cache.stock.end())

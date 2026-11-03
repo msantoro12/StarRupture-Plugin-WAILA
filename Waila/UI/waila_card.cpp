@@ -322,7 +322,8 @@ namespace Waila::UI
 		// agree on the line count or the card is sized for text it doesn't draw.
 		int WrapDescription(const std::string& desc, float widthPoints,
 		                    std::vector<std::string>* outLines, float font = kFontTiny,
-		                    float perChar = 0.5f, int maxLines = kDescMaxLines)
+		                    float perChar = 0.5f, int maxLines = kDescMaxLines,
+		                    std::vector<size_t>* outStarts = nullptr)
 		{
 			if (desc.empty())
 				return 0;
@@ -349,6 +350,8 @@ namespace Waila::UI
 
 				if (outLines)
 					outLines->push_back(desc.substr(pos, end - pos));
+				if (outStarts)
+					outStarts->push_back(pos);
 
 				++lines;
 				pos = end;
@@ -361,20 +364,35 @@ namespace Waila::UI
 
 		// The lines a rate row is drawn on: one, or for a row that wraps, as many
 		// as it takes at the card's width, the continuations indented. The first
-		// line has the whole text column, the rest what the indent leaves.
-		std::vector<std::string> RowLines(const RateRow& row, float cardW)
+		// line has the whole text column, the rest what the indent leaves. Each
+		// line remembers where it starts in the row's text, for the row's spans.
+		struct RowLine
+		{
+			std::string text;
+			size_t      start = 0;
+		};
+
+		std::vector<RowLine> RowLines(const RateRow& row, float cardW)
 		{
 			if (!row.wrap)
-				return { row.name };
+				return { { row.name, 0 } };
 			const float textW = cardW - kPadX * 2.0f - kRateIcon - kRateGap;
-			std::vector<std::string> lines;
-			WrapDescription(row.name, textW, &lines, kFontLabel, kRateChar, 1);
-			if (lines.empty())
-				return { row.name };
-			size_t rest = lines[0].size();
+			std::vector<std::string> texts;
+			std::vector<size_t>      starts;
+			WrapDescription(row.name, textW, &texts, kFontLabel, kRateChar, 1, &starts);
+			if (texts.empty())
+				return { { row.name, 0 } };
+			size_t rest = texts[0].size();
 			while (rest < row.name.size() && row.name[rest] == ' ')
 				++rest;
-			WrapDescription(row.name.substr(rest), textW - kRateIndent, &lines, kFontLabel, kRateChar, kRateMaxLines - 1);
+			std::vector<size_t> restStarts;
+			WrapDescription(row.name.substr(rest), textW - kRateIndent, &texts, kFontLabel, kRateChar, kRateMaxLines - 1, &restStarts);
+			for (const size_t at : restStarts)
+				starts.push_back(rest + at);
+
+			std::vector<RowLine> lines;
+			for (size_t i = 0; i < texts.size(); ++i)
+				lines.push_back({ std::move(texts[i]), starts[i] });
 			return lines;
 		}
 
@@ -706,6 +724,42 @@ namespace Waila::UI
 
 	namespace
 	{
+		// One line of a rate row. The stretches the row names a health colour are
+		// drawn in it, one after another from where the last ended, the rest in
+		// the plain colour; a line that runs past maxW is cut with an ellipsis
+		// like any other.
+		void DrawRateText(IModLoaderImGui* ui, PluginDrawList dl, const RateRow& row, const RowLine& line,
+		                  const Palette& pal, float x, float y, float maxW, float fontSize)
+		{
+			const size_t from = line.start;
+			const size_t to   = line.start + line.text.size();
+			float used = 0.0f;
+			size_t at  = from;
+			auto piece = [&](size_t end, const Color& c)
+			{
+				if (end <= at)
+					return;
+				const std::string text = row.name.substr(at, end - at);
+				const float w = Draw::TextWidth(ui, text.c_str(), fontSize);
+				if (used + w > maxW)
+					Draw::TextFitted(ui, dl, x + used, y, maxW - used, text.c_str(), c, fontSize);
+				else
+					Draw::TextAt(ui, dl, x + used, y, text.c_str(), c, fontSize);
+				used += w;
+				at = end;
+			};
+			for (const RateRow::Span& span : row.spans)
+			{
+				const size_t begin = (std::max)(span.begin, from);
+				const size_t end   = (std::min)(span.end, to);
+				if (begin >= end)
+					continue;
+				piece(begin, pal.textPrimary);
+				piece(end, Theme::Of(pal, span.tone));
+			}
+			piece(to, pal.textPrimary);
+		}
+
 		void DrawRateBody(IModLoaderImGui* ui, PluginDrawList dl, const CardModel& m,
 		                  const Palette& pal, float s, const Rect& r, float bodyTop)
 		{
@@ -734,13 +788,12 @@ namespace Waila::UI
 				else if (row.lead == RateRow::Lead::Bullet)
 					Draw::StatusDot(ui, dl, left + kRateIcon * 0.5f * s, midY, kRateBullet * s, pal.textPrimary, 0.0f);
 
-				const std::vector<std::string> lines = RowLines(row, (r.x1 - r.x0) / s);
+				const std::vector<RowLine> lines = RowLines(row, (r.x1 - r.x0) / s);
 				for (size_t k = 0; k < lines.size(); ++k)
 				{
 					const float indent = k ? kRateIndent * s : 0.0f;
-					Draw::TextFitted(ui, dl, left + (kRateIcon + kRateGap) * s + indent,
-						textY + kRateContH * s * static_cast<float>(k), nameMaxW - indent,
-						lines[k].c_str(), pal.textPrimary, kFontLabel * s);
+					DrawRateText(ui, dl, row, lines[k], pal, left + (kRateIcon + kRateGap) * s + indent,
+						textY + kRateContH * s * static_cast<float>(k), nameMaxW - indent, kFontLabel * s);
 				}
 				y += (kRateRowH + kRateContH * static_cast<float>(lines.size() - 1)) * s;
 			}
