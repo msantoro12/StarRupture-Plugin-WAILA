@@ -45,6 +45,7 @@ namespace Waila
 		int32_t craftingMultiplier = 1;      // FCrCraftingFragment::CraftingMultiplier
 		bool    bMissingItems = false;       // FCrCraftingFragment::bIsMissingItems
 		bool    bOutputFull   = false;       // FCrCraftingFragment::bOutputFull
+		bool    bNoPower      = false;       // the building reports ECrBuildingState::NoElectricity
 
 		// Recipe inputs and output, in the order the recipe declares them.
 		// Empty while the crafter is idle.

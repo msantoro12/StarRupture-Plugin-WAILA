@@ -185,6 +185,10 @@ namespace Waila
 			outInfo.buildingDesc = "N/A";
 		}
 
+		// The game's own reason a building stands still for want of power; read
+		// here, on the tick, and kept as a plain flag.
+		outInfo.bNoPower = building->GetBuildingState() == ECrBuildingState::NoElectricity;
+
 		outInfo.craftingSpeed = Fields::ValueOr<float>(Fields::SettingsSpeed, Fields::CraftingSettings.In(crafter), outInfo.craftingSpeed);
 
 		// Crafting progress (0.0 - 1.0)

@@ -125,8 +125,14 @@ namespace Waila::UI
 			return;
 		}
 
-		// Output full is the more actionable of the two — say that one first.
-		if (info.bOutputFull)
+		// A stop the game reports for another reason comes first; then output full,
+		// the more actionable of the two item stalls.
+		if (info.bNoPower)
+		{
+			out.status     = Health::Bad;
+			out.statusText = "No power";
+		}
+		else if (info.bOutputFull)
 		{
 			out.status     = Health::Bad;
 			out.statusText = "Output full";
@@ -162,10 +168,10 @@ namespace Waila::UI
 				slot.rate = std::string(full) + "/min";
 
 				// Short when the store can't fund the next cycle and what has been
-				// arriving doesn't make up the difference. An output-blocked machine
-				// isn't waiting on its inputs, so none is blamed. Gaps under a tenth of
+				// arriving doesn't make up the difference. A machine stopped for power
+				// or blocked by a full output isn't waiting on its inputs, so none is blamed. Gaps under a tenth of
 				// the need are delivery jitter, not a shortage.
-				if (!info.bOutputFull && in.have >= 0 && in.have < in.need && in.arrivalPerMin >= 0.0f)
+				if (!info.bNoPower && !info.bOutputFull && in.have >= 0 && in.have < in.need && in.arrivalPerMin >= 0.0f)
 				{
 					const float missing = in.perMin - in.arrivalPerMin;
 					if (missing >= in.perMin * 0.1f && missing >= 0.5f)
