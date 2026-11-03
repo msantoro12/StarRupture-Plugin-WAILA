@@ -60,6 +60,7 @@ namespace Waila
 			bool                                      linked    = false;   // it found a building or storage linked to the rail
 			bool                                      truncated = false;
 			float                                     capacity  = -1.0f;   // items a minute; negative when unread
+			bool                                      starvedFeeder = false;   // a maker upstream is short of an input
 			std::vector<RailNetwork::FlowPart>        parts;
 			std::vector<RailNetwork::ItemFlow>        flows;
 			std::unordered_map<std::string, ItemInfo> items;
@@ -430,6 +431,7 @@ namespace Waila
 				float full = -1.0f;
 				if (!RecipeRate(crafter.recipe, 0, crafter.speed, full))
 					full = -1.0f;
+				out.starvedFeeder = out.starvedFeeder || crafter.starved;
 				RailNetwork::FlowPart part{ machine, unique, true, full };
 				part.now  = full >= 0.0f ? (crafter.stalled ? 0.0f : full) : -1.0f;
 				part.name = nameOf(machine);
@@ -678,8 +680,11 @@ namespace Waila
 			onRail.insert(flow.item);
 		const std::vector<RailNetwork::EndRow> ends = fromMass ? RailNetwork::GroupEnds(g_cache.parts, onRail)
 		                                                       : std::vector<RailNetwork::EndRow>{};
+		bool judged = false, feedShort = false;
 		for (const RailNetwork::ItemFlow& flow : g_cache.flows)
 		{
+			judged    = judged || flow.judged;
+			feedShort = feedShort || flow.short_;
 			RailRateEntry entry;
 			entry.perMinMax = flow.max;
 			entry.perMinMin = flow.min;
@@ -708,6 +713,10 @@ namespace Waila
 		}
 		outInfo.truncated = g_cache.truncated;
 		outInfo.fromMass  = fromMass;
+		outInfo.capacity  = g_cache.capacity;
+		outInfo.feed      = g_cache.starvedFeeder ? RailInfo::Feed::Starved
+		                  : feedShort             ? RailInfo::Feed::Short
+		                  : judged                ? RailInfo::Feed::Fed : RailInfo::Feed::Unjudged;
 
 		if (outInfo.rates.empty() && fromMass)
 			outInfo.note = !g_cache.found ? "Rail data not available"

@@ -767,15 +767,22 @@ namespace Waila::RailNetwork
 		float       output    = 0.0f;   // the sources' output, uncapped; orders the rows
 		float       max       = -1.0f;  // the sources' output, nobody pulling
 		float       min       = -1.0f;  // left with every consumer running full out
-		float       now       = -1.0f;  // left with the consumers requesting it right now
+		float       now       = -1.0f;  // what the sources put out right now (none while stalled), less the consumers requesting it right now
+		bool        judged    = false;  // consumers take it and their requests are read, so short_ means something
+		bool        short_    = false;  // the consumers requesting it right now want more than the rail can bring
 	};
 
 	// Sums the parts into one flow per item that has a source, biggest output
 	// first. capacity is what the rail carries in items a minute (negative when
 	// unread, which leaves the figures uncapped). Each figure is floored at 0
-	// and capped by the capacity. A source whose rate is unread leaves the
-	// item's figures unknown; a consumer whose intake or request is unread
-	// leaves min or now unknown. Storage holding the item is a source that
+	// and capped by the capacity. max and min start from what the sources can
+	// put out; now from what they put out right now, which is 0 for a source
+	// that is stalled. A source whose rate is unread leaves the item's figures
+	// unknown; a consumer whose intake or request is unread leaves min or now
+	// unknown. short_ is set when max is below what the consumers requesting
+	// the item right now take, before the floor at 0; it is only judged (and
+	// only means something) when a consumer takes the item and every figure it
+	// needs is read. Storage holding the item is a source that
 	// makes nothing: an item only storage holds has all three figures 0.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{
@@ -785,6 +792,7 @@ namespace Waila::RailNetwork
 			bool     outputKnown = true;
 			bool     fullKnown   = true;
 			bool     nowKnown    = true;
+			float    outputNow = 0.0f;   // the sources' output right now
 			float    takeFull = 0.0f;
 			float    takeNow  = 0.0f;
 			bool     held     = false;   // storage holds it
@@ -819,6 +827,10 @@ namespace Waila::RailNetwork
 					sum.flow.output += part.full;
 				else
 					sum.outputKnown = false;
+				if (part.now >= 0.0f)
+					sum.outputNow += part.now;
+				else
+					sum.nowKnown = false;
 				continue;
 			}
 			if (part.full >= 0.0f)
@@ -853,7 +865,11 @@ namespace Waila::RailNetwork
 				if (sum.fullKnown)
 					flow.min = cap(flow.output - sum.takeFull);
 				if (sum.nowKnown)
-					flow.now = cap(flow.output - sum.takeNow);
+				{
+					flow.now    = cap(sum.outputNow - sum.takeNow);
+					flow.judged = flow.consumers > 0;
+					flow.short_ = flow.judged && flow.max < sum.takeNow;
+				}
 			}
 			flows.push_back(std::move(flow));
 		}

@@ -58,6 +58,7 @@ namespace Waila::RailMass
 		SDK::UAuItemRecipeData* recipe    = nullptr;   // valid only in the tick it was read
 		float                   speed     = 0.0f;
 		bool                    stalled   = false;     // missing items or output full
+		bool                    starved   = false;     // missing items and not output full, as the machine card's "Starved"
 	};
 
 	// Game thread only. False when the reader is unavailable or a read faulted;

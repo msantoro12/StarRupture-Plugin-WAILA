@@ -42,6 +42,18 @@ namespace Waila
 		// What the rail is set to carry. Empty when it carries anything.
 		std::string filterName;
 
+		// What the rail itself carries in items a minute, from its drone speed
+		// and spacing; negative when not read.
+		float   capacity    = -1.0f;
+
+		// How well the rail is fed right now, the first that holds: Starved when
+		// a maker upstream is short of an input, Short when the machines
+		// requesting an item want more of it than the rail can bring, Fed when
+		// neither and something takes from it, otherwise Unjudged (nothing takes
+		// from it, or a figure is unread).
+		enum class Feed : uint8_t { Unjudged, Fed, Short, Starved };
+		Feed    feed        = Feed::Unjudged;
+
 		int32_t sourceCount = 0;
 		bool    truncated   = false;   // the network walk hit a cap
 		std::vector<RailRateEntry> rates;   // items made first, then items only in storage
