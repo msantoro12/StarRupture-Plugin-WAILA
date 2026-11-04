@@ -13,17 +13,17 @@
   - **Passive Coolers** — passive heat-sink info
   - **Cargo Senders** — send interval, send progress, current item being shipped
   - **Cargo Receivers** — incoming cargo state
-  - **Drone Rails** — what the machines attached to a rail's network make and take, read from the game's drone logistics, so it works with nothing moving and along the whole line, out of render range too. See [Rail card](#rail-card)
+  - **Drone Rails** — what the machines attached to a rail's network make and take, read from the game's drone logistics, so it works with nothing moving and along the whole line, out of render range too. See [Rail card](#rail-card) <sup>[✦](#msantoro12)</sup>
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 
-## Rail card
+## Rail card <sup>[✦](#msantoro12)</sup>
 
-Aim at a drone rail and the card shows what travels along it, item by item. WAILA follows the rails back from the one you point at, through poles, junctions, mergers, storage and stations, to the machines feeding it, then on from the rail's end to every machine taking the items.
+Aim at a drone rail and the card shows what travels along it, item by item. WAILA follows the rails back from the one you point at, through poles, junctions, mergers, storage and stations, to the machines feeding it, then on from the rail's end to every machine taking the items. Drones riding a rail do not get in the way: the aim looks through them to the rail behind.
 
 **Header.** The rail's name and what it carries per minute ("Rail v.3  480/min"), then a dot and "From 20 to 4": how many buildings make the items on it and how many take them. The dot is:
 - **green** when all is good: the machines asking for an item right now want no more than the rail can bring. For an item only storage or a Cargo Receiver supplies, which has no rate to compare, green means the storage holds some or a receiver brings it;
-- **yellow** when they want more than the rail can bring (a bottleneck), or, for an item only storage supplies, when the storage holds none and a machine is asking for it. The item then gets an orange "Short N/min" line under its To line (what the machines asking for it right now want, less the most the rail can bring), and the machines on its To line are drawn in the same orange;
+- **orange** when they want more than the rail can bring (a bottleneck), or, for an item only storage supplies, when the storage holds none and a machine is asking for it. The item then gets an orange "Short N/min" line under its To line (what the machines asking for it right now want, less the most the rail can bring), and the machines on its To line are drawn in the same orange;
 - **red** when a machine feeding the rail is starved, short of an input. That machine's name on the From line is drawn in red; a kind with both starved and running machines is split, so only the starved ones are red ("Furnace v.2" red, "2x Furnace v.2" plain);
 - **grey** when there is nothing to judge, for example nothing takes from the rail.
 
@@ -33,7 +33,7 @@ Aim at a drone rail and the card shows what travels along it, item by item. WAIL
 
 and under them, in line with the text, **min · max · current** per minute. All three are about the makers feeding the rail. Max is what they make at full speed, capped at what the rail itself carries. Min is what they can make with the inputs they get now, the same capped: a starved maker counts 0, any other its full rate. Current is what is moving now: the smaller of what the makers are putting out right now (a stalled maker puts out nothing, capped at the rail) and what the machines asking for the item right now want. The machines taking an item never lower min or max; current runs anywhere from 0 to max. Cargo Receivers and Senders are counted at their own rate, which the game does not give, so WAILA measures it: the items in one package of a connection over the time between its sends, summed over the connections that put the item on this rail (a receiver) or take it off (a sender). Until a connection has been seen sending twice, the send interval stands in for the time between sends; one never seen sending reads "?" (a receiver's max and current then read the makers' part followed by "+?", or just "?" for an item only receivers bring). WAILA keeps measuring while you are not aiming at a rail, so a rate is ready by the time you do. A connection that has stopped sending counts 0 in min and current, and a receiver in that state is drawn red on the From line like a starved maker.
 
-**Using it.** Aim at a rail you suspect is a bottleneck. A yellow dot says the takers want more than the rail brings: add a maker or a second rail. A red dot says a feeder is starved: follow the rail back to the makers in "From" and aim at one to see which ingredient it is short of. A "current" well under "max" means the takers ask for less than the rail can bring; a current at max with an orange "Short" line means the rail is full and the takers still want more.
+**Using it.** Aim at a rail you suspect is a bottleneck. An orange dot says the takers want more than the rail brings: add a maker or a second rail. A red dot says a feeder is starved: follow the rail back to the makers in "From" and aim at one to see which ingredient it is short of. A "current" well under "max" means the takers ask for less than the rail can bring; a current at max with an orange "Short" line means the rail is full and the takers still want more.
 
 A card shows up to twelve lines. A rail with nothing linked reads "Nothing connected", and "Rail data not available" when WAILA cannot read the rail's network on this game build.
 
@@ -133,5 +133,5 @@ This project is provided as-is for modding purposes. See the StarRupture ModLoad
 
 Original mod by [@AlienXAXS](https://github.com/AlienXAXS)
 
-- <a id="msantoro12"></a><sup>✦</sup> [@msantoro12](https://github.com/msantoro12), creator of [StarRupture Planner](https://starrupture.goodstuff.software)
-- The way the cargo connections are read from the package transport replicator follows [MapExtension_Plugin](https://github.com/Mralexandresys/MapExtension_Plugin) by Mralexandresys (MIT)
+- <a id="msantoro12"></a><sup>✦</sup> [@msantoro12](https://github.com/msantoro12) (maintainer), creator of [StarRupture Planner](https://starrupture.goodstuff.software)
+- The way the cargo connections are read from the package transport replicator follows [MapExtension_Plugin](https://github.com/Mralexandresys/MapExtension_Plugin) by Mralexandresys (MIT, Copyright (c) 2026 MapExtension_Plugin contributors)
