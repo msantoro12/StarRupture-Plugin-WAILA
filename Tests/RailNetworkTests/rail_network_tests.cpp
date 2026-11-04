@@ -452,7 +452,7 @@ namespace
 	}
 
 	// max and min are the makers capped by the rail, whatever the takers want;
-	// now is what moves. The cases are from a gss.27 dump.
+	// now is what moves. The cases are from a captured save.
 	void TestFlowsCapAndMin()
 	{
 		// Six furnaces make 2880 a minute, six takers want 240 in all.
@@ -976,8 +976,8 @@ namespace
 		tracker.Observe({ other }, 144.0, 5.0f);
 		Check(!tracker.Of(receiver, true, "Wolfram").links, "a dropped connection is forgotten");
 
-		// The replicator reads the start as -1 between two sends (the gss.33 log:
-		// every next send came out with gap = start + 1, 0.14 items a minute).
+		// The replicator reads the start as -1 between two sends (every next send
+		// came out with gap = start + 1, 0.14 items a minute).
 		// The last real start stays, so the next send is timed from it, and the
 		// connection does not read as stopped while it waits.
 		Tracker held;
@@ -995,7 +995,7 @@ namespace
 		Check(rate.known && Near(rate.full, 120.0f) && rate.measured == 1, "the send after a -1 read is timed from the last real start");
 
 		tracker.Clear();
-		Check(tracker.Entries().empty(), "cleared");
+		Check(!tracker.Of(7, true, "Wolfram").links && !tracker.Of(sender, false, "Wolfram").links, "cleared");
 	}
 }
 

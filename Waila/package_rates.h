@@ -52,7 +52,7 @@ namespace Waila::PackageRates
 	class Tracker
 	{
 	public:
-		// One connection's standing, for the log and the tests.
+		// One connection's standing.
 		struct Entry
 		{
 			Link  link;
@@ -144,22 +144,6 @@ namespace Waila::PackageRates
 			std::sort(items.begin(), items.end());
 			return items;
 		}
-
-		std::vector<Entry> Entries() const
-		{
-			std::vector<Entry> out;
-			out.reserve(m_states.size());
-			for (const auto& [key, state] : m_states)
-				out.push_back(Describe(state));
-			std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b)
-				{ return a.link.sender != b.link.sender ? a.link.sender < b.link.sender
-				       : a.link.receiver != b.link.receiver ? a.link.receiver < b.link.receiver : a.link.item < b.link.item; });
-			return out;
-		}
-
-		// The replicator's send interval as last observed, seconds; 0 or less
-		// when it could not be read.
-		float Interval() const { return m_interval; }
 
 		void Clear()
 		{

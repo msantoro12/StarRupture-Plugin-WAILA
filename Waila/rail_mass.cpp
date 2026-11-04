@@ -11,10 +11,6 @@
 #include "storage_detector.h"
 #include "Chimera_structs.hpp"
 
-// WAILA-RAIL-DIAG BEGIN
-#include "rail_diag.h"
-// WAILA-RAIL-DIAG END
-
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
@@ -375,38 +371,15 @@ namespace Waila::RailMass
 
 		const uint8_t* SharedFragment(const void* manager, Entity entity, const UScriptStruct* type);
 		void ReadCrafterImpl(Entity building, CrafterState& out);
-		void ReadBuildingImpl(Entity building, UCrBuildingData*& out);
-
-		// WAILA-RAIL-DIAG BEGIN
-		// Why a fragment read of an entity came back empty.
-		const char* DiagWhy(const void* manager, Entity entity, const UScriptStruct* type)
-		{
-			if (!entity)
-				return "no entity";
-			if (!type)
-				return "the fragment's struct was not found by name";
-			const Handle h = ToHandle(entity);
-			if (!g_isValid(manager, h))
-				return "entity not valid (gone or recycled)";
-			if (!g_isBuilt(manager, h))
-				return "entity not built yet";
-			return "entity has no such fragment";
-		}
-		// WAILA-RAIL-DIAG END
 
 		// A building of the type that makes and takes is storage when it has no
 		// recipe to run and keeps an inventory: items rest there, and the rails
 		// out of it carry what the rails into it brought (INFERRED from the
-		// depots in the rail dumps, which were type 2 with no recipe).
+		// depots in captured saves, which were type 2 with no recipe).
 		bool HoldsStockOnly(const void* manager, Entity building)
 		{
 			CrafterState crafter;
 			ReadCrafterImpl(building, crafter);
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("    node %s: LogisticsType 2 depot check: recipe %s, inventory fragment %s -> %s", RailDiag::Id(building).c_str(),
-				crafter.recipe ? "set" : "none", Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) ? "present" : "MISSING",
-				!crafter.recipe && Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) ? "STORAGE" : "machine");
-			// WAILA-RAIL-DIAG END
 			return !crafter.recipe && Fragment(manager, building, Found(g_inventoryStruct, "CrInventoryFragment")) != nullptr;
 		}
 
@@ -414,20 +387,9 @@ namespace Waila::RailMass
 		{
 			const uint8_t* spline = Fragment(manager, rail, Found(g_splineStruct, "AuSplineConnectionFragment"));
 			if (!spline)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("    rail %s: spline connection fragment MISSING (%s)", RailDiag::Id(rail).c_str(),
-					DiagWhy(manager, rail, g_splineStruct));
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 			start = HandleOf(spline + mStartEntity.Offset(), world);
 			end   = HandleOf(spline + mEndEntity.Offset(), world);
-			// WAILA-RAIL-DIAG BEGIN
-			if (!start || !end)
-				RAIL_DIAG_LINE("    rail %s: %s end UNRESOLVABLE (the persistent ID gives no entity: node not spawned or not loaded)",
-					RailDiag::Id(rail).c_str(), !start && !end ? "start and" : !start ? "start" : "end");
-			// WAILA-RAIL-DIAG END
 			const uint8_t* params = SharedFragment(manager, rail, Found(g_paramsStruct, "CrLogisticsLineParameters"));
 			twoWay = params && !ReadAt<bool>(params, mOneWay.Offset());
 		}
@@ -440,55 +402,28 @@ namespace Waila::RailMass
 			const void* manager = Manager(world);
 			const uint8_t* logistics = manager ? SharedFragment(manager, node, Found(g_logisticsStruct, "CrLogisticsParameters")) : nullptr;
 			if (!logistics)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("    node %s: logistics parameters MISSING (%s): the node cannot be read",
-					RailDiag::Id(node).c_str(), manager ? DiagWhy(manager, node, g_logisticsStruct) : "no Mass entity manager (no world)");
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 			found = true;
 			const uint8_t type = ReadAt<uint8_t>(logistics, mLogisticsType.Offset());
 			using RailNetwork::NodeKind;
 			out.kind = type == kTypeLineNode || type == kTypeLineConnection ? NodeKind::PassThrough
 			         : type == kTypeStorage || (type == kTypeBoth && HoldsStockOnly(manager, node)) ? NodeKind::Storage
 			         : NodeKind::Machine;
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("    node %s: logistics parameters found, LogisticsType=%u (1 storage, 2 makes and takes, 5 line node, 6 line connection) -> %s",
-				RailDiag::Id(node).c_str(), static_cast<unsigned>(type), RailNetwork::DiagKind(out.kind));
-			// WAILA-RAIL-DIAG END
 			out.role = type == kTypeProducer ? RailNetwork::Role::Producer
 			         : type == kTypeConsumer ? RailNetwork::Role::Consumer
 			         : RailNetwork::Role::Other;
 
 			const uint8_t* sockets = Fragment(manager, node, Found(g_socketsStruct, "CrLogisticsSocketsFragment"));
 			if (!sockets)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("    node %s: sockets fragment MISSING (%s): no links", RailDiag::Id(node).c_str(),
-					DiagWhy(manager, node, g_socketsStruct));
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 			const RawArray list = ArrayAt(sockets, mSockets.Offset());
 			const bool tracks = g_trackResolved && g_trackFeature.On();
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("    node %s: sockets fragment found, %d socket(s), socket pairs %s", RailDiag::Id(node).c_str(),
-				list.num, tracks ? "read" : "OFF");
-			// WAILA-RAIL-DIAG END
 			for (int32_t i = 0; i < list.num; ++i)
 			{
 				const uint8_t* socket = list.data + static_cast<size_t>(i) * kSocketSize.size;
 				const Entity rail = ReadAt<Entity>(socket, mSocketRail.Offset());
 				if (!rail || ReadAt<uint8_t>(socket, mSocketType.Offset()) == 0)
-				{
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("      socket %d: connectionType=%u rail=%s: skipped, %s", i,
-						static_cast<unsigned>(ReadAt<uint8_t>(socket, mSocketType.Offset())), RailDiag::Id(rail).c_str(),
-						!rail ? "no rail on it" : "connection type 0 (nothing connected)");
-					// WAILA-RAIL-DIAG END
 					continue;
-				}
 				Entity start = 0, end = 0;
 				bool twoWay = false;
 				ReadEndsImpl(manager, world, rail, start, end, twoWay);
@@ -498,34 +433,9 @@ namespace Waila::RailMass
 				link.out   = start == node || (twoWay && end == node);
 				link.rail  = rail;
 				link.track = tracks ? TrackOf(socket) : 0;
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("      socket %d: connectionType=%u rail %s start=%s end=%s twoWay=%d -> other=%s in=%d out=%d track=%llu: %s",
-					i, static_cast<unsigned>(ReadAt<uint8_t>(socket, mSocketType.Offset())), RailDiag::Id(rail).c_str(),
-					RailDiag::Id(start).c_str(), RailDiag::Id(end).c_str(), twoWay, RailDiag::Id(link.other).c_str(), link.in,
-					link.out, static_cast<unsigned long long>(link.track),
-					link.other == node ? "DROPPED (rail joins the node to itself)"
-					: !link.other ? "DROPPED (far end unresolved, or this node is neither end of the rail)" : "link kept");
-				// WAILA-RAIL-DIAG END
 				if (link.other && link.other != node)
 					out.links.push_back(link);
 			}
-			// WAILA-RAIL-DIAG BEGIN
-			// A pass-through node with three or more rails is a splitter, merger or
-			// balancer: the dump names the building and its in and out rails.
-			if (RailDiag::Active() && out.kind == RailNetwork::NodeKind::PassThrough && out.links.size() >= 3)
-			{
-				UCrBuildingData* data = nullptr;
-				ReadBuildingImpl(node, data);
-				int in = 0, outward = 0;
-				for (const RailNetwork::NodeLink& link : out.links)
-				{
-					in += link.in ? 1 : 0;
-					outward += link.out ? 1 : 0;
-				}
-				RAIL_DIAG_LINE("    node %s: junction building \"%s\", %zu rails (%d in, %d out): the walk passes through it, it counts as neither maker nor taker, and its split rule is not read",
-					RailDiag::Id(node).c_str(), data ? data->GetName().c_str() : "unknown", out.links.size(), in, outward);
-			}
-			// WAILA-RAIL-DIAG END
 		}
 
 		// A request's item, and with the requests feature its type and the
@@ -541,20 +451,12 @@ namespace Waila::RailMass
 			{
 				view.store = ReadAt<uint8_t>(data, mRequestType.Offset()) == 1;
 				const RawArray runs = ArrayAt(data, mRuntimeData.Offset());
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("      request: wants %s, type=%u (%s), %d runtime run(s)", item->GetName().c_str(),
-					static_cast<unsigned>(ReadAt<uint8_t>(data, mRequestType.Offset())), view.store ? "store" : "acquire/other", runs.num);
-				// WAILA-RAIL-DIAG END
 				for (int32_t i = 0; i < runs.num && i < kMaxDeliveries; ++i)
 				{
 					const uint8_t* run = runs.data + static_cast<size_t>(i) * kRuntimeSize.size;
 					Delivery delivery;
 					delivery.source      = HandleOf(run + mItemSource.Offset(), world);
 					delivery.destination = HandleOf(run + mItemDestination.Offset(), world);
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("        run %d: ItemSource=%s ItemDestination=%s%s", i, RailDiag::Id(delivery.source).c_str(),
-						RailDiag::Id(delivery.destination).c_str(), delivery.source || delivery.destination ? "" : " (both empty: dropped)");
-					// WAILA-RAIL-DIAG END
 					if (delivery.source || delivery.destination)
 						view.deliveries.push_back(delivery);
 				}
@@ -592,27 +494,13 @@ namespace Waila::RailMass
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* fragment = manager ? Fragment(manager, building, Found(g_craftingStruct, "CrCraftingFragment")) : nullptr;
 			if (!fragment)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("      machine %s: crafting fragment MISSING (%s): not a crafter (storage, station, ...)",
-					RailDiag::Id(building).c_str(), manager ? DiagWhy(manager, building, g_craftingStruct) : "no Mass entity manager");
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 
 			out.isCrafter = true;
 			auto* recipe = ReadAt<UAuItemRecipeData*>(fragment, mSelectedRecipe.Offset());
-			// WAILA-RAIL-DIAG BEGIN
-			const bool diagSelected = recipe != nullptr;
-			// WAILA-RAIL-DIAG END
 			if (!recipe)
 				recipe = ReadAt<UAuItemRecipeData*>(fragment, mCurrentRecipe.Offset());
 			out.recipe  = recipe && UKismetSystemLibrary::IsValid(recipe) ? recipe : nullptr;
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("      machine %s: crafting fragment found, recipe %s (%s)", RailDiag::Id(building).c_str(),
-				out.recipe ? "set" : recipe ? "pointer present but not valid" : "NONE (selected and current both null)",
-				diagSelected ? "selected recipe" : recipe ? "current recipe" : "-");
-			// WAILA-RAIL-DIAG END
 			out.speed   = ReadAt<float>(fragment, mCraftingSpeed.Offset());
 			const bool missing    = ReadAt<bool>(fragment, mMissingItems.Offset());
 			const bool outputFull = ReadAt<bool>(fragment, mOutputFull.Offset());
@@ -658,13 +546,7 @@ namespace Waila::RailMass
 			const uint8_t* params = line ? SharedFragment(manager, rail, g_paramsStruct) : nullptr;
 			const auto* settings  = reinterpret_cast<const uint8_t*>(UDronesDeveloperSettings::GetDefaultObj());
 			if (!params || !settings)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("    capacity: NOT READ (line fragment %s, line parameters %s, drone settings %s)",
-					line ? "found" : "MISSING", params ? "found" : "MISSING", settings ? "found" : "MISSING");
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 
 			const float speed     = ReadAt<float>(params, mLineMoveSpeed.Offset());
 			const float slot      = ReadAt<float>(params, mLineSlotLength.Offset());
@@ -675,10 +557,6 @@ namespace Waila::RailMass
 			const float gap     = slot > joinGap ? slot : joinGap;
 			if (speed > 0.0f && gap > 0.0f && std::isfinite(speed / gap))
 				perMin = speed / gap * 60.0f;
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("    capacity: moveSpeed=%.2f slotLength=%.2f joinSpace=%.2f startLine=%d -> gap %.2f, %.2f items/min%s",
-				speed, slot, joinSpace, startLine, gap, perMin, perMin < 0.0f ? " (left unread)" : "");
-			// WAILA-RAIL-DIAG END
 		}
 
 		// The building a built entity is: the placement data in its building
@@ -690,22 +568,11 @@ namespace Waila::RailMass
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* params = manager ? SharedFragment(manager, building, g_buildingStruct) : nullptr;
 			if (!params)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("      building %s: building parameters MISSING (%s): name reads Unknown building",
-					RailDiag::Id(building).c_str(), manager ? DiagWhy(manager, building, g_buildingStruct) : "no Mass entity manager");
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 
 			auto* placement = ReadAt<UObject*>(params, mPlacement.Offset());
 			if (placement && UKismetSystemLibrary::IsValid(placement) && placement->IsA(UCrBuildingData::StaticClass()))
 				out = static_cast<UCrBuildingData*>(placement);
-			// WAILA-RAIL-DIAG BEGIN
-			else
-				RAIL_DIAG_LINE("      building %s: building parameters found but the placement data is %s: name reads Unknown building",
-					RailDiag::Id(building).c_str(), !placement ? "null" : "not valid building data");
-			// WAILA-RAIL-DIAG END
 		}
 
 		// What a storage holds: both containers of its inventory fragment, one
@@ -719,31 +586,8 @@ namespace Waila::RailMass
 			const void* manager = Manager(PluginSdkRuntime::GetWorld());
 			const uint8_t* inventory = manager ? Fragment(manager, storage, Found(g_inventoryStruct, "CrInventoryFragment")) : nullptr;
 			if (!inventory)
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("      storage %s: inventory fragment MISSING (%s)", RailDiag::Id(storage).c_str(),
-					manager ? DiagWhy(manager, storage, g_inventoryStruct) : "no Mass entity manager");
-				// WAILA-RAIL-DIAG END
 				return;
-			}
 			found = true;
-			// WAILA-RAIL-DIAG BEGIN
-			if (RailDiag::Active())
-			{
-				int32_t enabled[2] = { 0, 0 }, total[2] = { 0, 0 };
-				const size_t offsets[2] = { mInputInventory.Offset(), mMainInventory.Offset() };
-				for (int c = 0; c < 2; ++c)
-				{
-					const auto* container = reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + offsets[c]);
-					const Fields::StructArray slots(Fields::StorageItems.In(container), Fields::StorageItemSize);
-					total[c] = slots.Num();
-					for (int32_t i = 0; i < slots.Num(); ++i)
-						enabled[c] += !Fields::ValueOr<bool>(Fields::SlotDisabled, slots.At(i));
-				}
-				RAIL_DIAG_LINE("      storage %s: capacity, slots enabled/total: input container %d/%d, main container %d/%d",
-					RailDiag::Id(storage).c_str(), enabled[0], total[0], enabled[1], total[1]);
-			}
-			// WAILA-RAIL-DIAG END
 			int32_t usedSlots = 0;
 			std::vector<StoredItemEntry> main;
 			ReadStoredItems(reinterpret_cast<const SDK::FCrItemsStorageContainer*>(inventory + mInputInventory.Offset()), out, usedSlots);

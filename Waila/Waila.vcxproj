@@ -313,7 +313,6 @@
     <ClInclude Include="rail_detector.h" />
     <ClInclude Include="rail_mass.h" />
     <ClInclude Include="rail_network.h" />
-    <ClInclude Include="rail_diag.h" />
     <ClInclude Include="UI\ui_manager.h" />
     <ClInclude Include="UI\ui_theme.h" />
     <ClInclude Include="UI\ui_draw.h" />

@@ -7,9 +7,6 @@
 #include "plugin_helpers.h"
 #include "waila_functions.h"
 #include "waila_fields.h"
-// WAILA-RAIL-DIAG BEGIN
-#include "rail_diag.h"
-// WAILA-RAIL-DIAG END
 #include "Chimera_classes.hpp"
 #include "Chimera_structs.hpp"
 #include "AuCrafting_classes.hpp"
@@ -355,36 +352,6 @@ namespace Waila
 			}
 		}
 
-		// WAILA-RAIL-DIAG BEGIN
-		uint64_t g_diagLastKey = 0;   // the rail last dumped: its entity, or for a rail without one its address
-
-		void DiagEmit(const char* line)
-		{
-			LOG_INFO("%s", line);
-		}
-
-		// Starts a dump when the "Rail Diagnostic Dump" setting is on and the aimed
-		// rail is not the one last dumped. Game thread only (the tick).
-		bool BeginDiag(AActor* actor, bool fromMass, const std::string& filterUnique)
-		{
-			if (!RailDiag::g_enabled)
-				return false;
-			const RailMass::Entity entity = fromMass ? RailMass::EntityOf(actor) : 0;
-			const uint64_t key = entity ? entity : (static_cast<uint64_t>(reinterpret_cast<uintptr_t>(actor)) | (1ull << 63));
-			if (key == g_diagLastKey)
-				return false;
-			g_diagLastKey = key;
-			RailDiag::g_emit = &DiagEmit;
-			RailDiag::Begin();
-			RAIL_DIAG_LINE("rail entity %s (index/serial), actor class %s, filter \"%s\"", RailDiag::Id(entity).c_str(),
-				actor && actor->Class ? actor->Class->GetName().c_str() : "?", filterUnique.c_str());
-			RAIL_DIAG_LINE("features: mass reader %d, sources %d, crafters %d, capacity %d, loaded-layout fallback %d -> reading from %s",
-				RailMass::Available(), Features::ShowRailSources(), Features::ShowCrafters(), Features::ShowRailCapacity(),
-				Features::ShowDroneRails(), fromMass ? "the Mass data" : "the loaded layout only");
-			return true;
-		}
-		// WAILA-RAIL-DIAG END
-
 		// ---- From the game's Mass data (rail_mass.h) ---------------------------
 
 		// The building's name from its Mass entity's building parameters, which
@@ -437,13 +404,7 @@ namespace Waila
 			RailMass::Entity start = 0, end = 0;
 			bool twoWay = false;
 			if (!RailMass::ReadEnds(rail, start, end, twoWay))
-			{
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("rail %s: ReadEnds FAILED (start=%s end=%s, see the lines above): the card reads \"Rail data not available\"",
-					RailDiag::Id(rail).c_str(), RailDiag::Id(start).c_str(), RailDiag::Id(end).c_str());
-				// WAILA-RAIL-DIAG END
 				return false;
-			}
 			std::vector<uint64_t> from{ start };
 			std::vector<uint64_t> to{ end };
 			if (twoWay)
@@ -451,11 +412,6 @@ namespace Waila
 				from.push_back(end);
 				to.push_back(start);
 			}
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("rail %s joins start node %s and end node %s; %s", RailDiag::Id(rail).c_str(),
-				RailDiag::Id(start).c_str(), RailDiag::Id(end).c_str(),
-				twoWay ? "two-way: both nodes seed both walks" : "one-way: the start node seeds the upstream walk, the end node the downstream walk");
-			// WAILA-RAIL-DIAG END
 
 			const RailNetwork::Attached attached = RailNetwork::FindAttached(from, to,
 				[](uint64_t node, RailNetwork::NodeView& view) { return RailMass::ReadNode(node, view); },
@@ -463,34 +419,6 @@ namespace Waila
 			out.truncated = attached.truncated;
 			out.linked = !attached.upstream.empty() || !attached.downstream.empty()
 				|| !attached.upstreamStorage.empty() || !attached.downstreamStorage.empty();
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("walk result: %zu upstream machine(s), %zu downstream machine(s), %zu upstream storage, %zu downstream storage, truncated=%d",
-				attached.upstream.size(), attached.downstream.size(), attached.upstreamStorage.size(),
-				attached.downstreamStorage.size(), attached.truncated);
-			if (RailDiag::Active())
-			{
-				// Every package connection of the replicator that touches a machine of
-				// this walk, with the rate it was given or the reason it has none.
-				const std::vector<PackageRates::Tracker::Entry> links = g_rates.Entries();
-				RAIL_DIAG_LINE("package links: feature %d, send interval %.2fs (0 = not read), %zu tracked in all (0 = replicator not read yet); those touching this walk:",
-					Features::ShowPackageRates(), g_rates.Interval(), links.size());
-				auto onWalk = [&](uint64_t machine)
-				{
-					return std::find(attached.upstream.begin(), attached.upstream.end(), machine) != attached.upstream.end()
-						|| std::find(attached.downstream.begin(), attached.downstream.end(), machine) != attached.downstream.end();
-				};
-				for (const PackageRates::Tracker::Entry& e : links)
-				{
-					if (!onWalk(e.link.sender) && !onWalk(e.link.receiver))
-						continue;
-					const char* why = e.perMin >= 0.0f ? (e.measured ? "measured from two sends" : "from the send interval, one send seen")
-						: e.sends == 0 ? "NO RATE: never seen sending (start time 0 or unread)" : "NO RATE: send interval not read";
-					RAIL_DIAG_LINE("  link %s -> %s item %s amount %d start %.2f sends %d gap %.2fs rate %.2f/min%s: %s",
-						RailDiag::Id(e.link.sender).c_str(), RailDiag::Id(e.link.receiver).c_str(), e.link.item.c_str(), e.link.amount,
-						e.link.start, e.sends, e.gap, e.perMin, e.idle ? " IDLE" : "", why);
-				}
-			}
-			// WAILA-RAIL-DIAG END
 
 			std::unordered_map<uint64_t, std::string> names;
 			auto nameOf = [&](uint64_t entity) -> const std::string&
@@ -512,34 +440,13 @@ namespace Waila
 			{
 				RailMass::CrafterState crafter;
 				if (!RailMass::ReadCrafter(machine, crafter) || !crafter.isCrafter || !crafter.recipe)
-				{
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("  upstream machine %s \"%s\" SKIPPED: %s", RailDiag::Id(machine).c_str(), nameOf(machine).c_str(),
-						!crafter.isCrafter ? "no crafting data (not a crafter, or the crafter read is off/faulted; see the line above)"
-						                   : "crafter without a usable recipe");
-					RAIL_DIAG_TAIL("upstream machine %s \"%s\" has no recipe or no crafting data: no maker part (a Cargo Receiver is handled separately)",
-						RailDiag::Id(machine).c_str(), nameOf(machine).c_str());
-					// WAILA-RAIL-DIAG END
 					continue;
-				}
 				UAuItemDataBase* item = crafter.recipe->GetItemDataBase();
 				if (!item)
-				{
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("  upstream machine %s \"%s\" SKIPPED: its recipe has no output item", RailDiag::Id(machine).c_str(),
-						nameOf(machine).c_str());
-					// WAILA-RAIL-DIAG END
 					continue;
-				}
 				const std::string unique = Fields::UniqueNameOf(item);
 				if (!carriesItem(unique))
-				{
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("  upstream machine %s \"%s\" SKIPPED: makes %s but the rail's filter is %s", RailDiag::Id(machine).c_str(),
-						nameOf(machine).c_str(), unique.c_str(), filterUnique.c_str());
-					// WAILA-RAIL-DIAG END
 					continue;
-				}
 
 				Remember(out, item, unique);
 				carried.insert(unique);
@@ -554,12 +461,6 @@ namespace Waila
 				const auto through = attached.upstreamVia.find(machine);
 				if (through != attached.upstreamVia.end())
 					part.via = nameOf(through->second);
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("  upstream machine %s \"%s\": FROM part, makes %s (%s) full=%.2f/min now=%.2f/min speed=%.2f stalled=%d (%s)%s%s",
-					RailDiag::Id(machine).c_str(), part.name.c_str(), unique.c_str(), Fields::DisplayNameOf(item).c_str(), part.full,
-					part.now, crafter.speed, crafter.stalled,
-					crafter.starved ? "missing items, output not full" : crafter.stalled ? "output full" : "running", part.via.empty() ? "" : ", reached through ", part.via.c_str());
-				// WAILA-RAIL-DIAG END
 				out.parts.push_back(std::move(part));
 			}
 
@@ -575,40 +476,14 @@ namespace Waila
 				for (const uint64_t storage : storages)
 				{
 					if (!counted.insert(storage).second || !RailMass::ReadStored(storage, held))
-					{
-						// WAILA-RAIL-DIAG BEGIN
-						RAIL_DIAG_LINE("  %s storage %s SKIPPED: already counted, or its stock could not be read (see the line above)",
-							upstream ? "upstream" : "downstream", RailDiag::Id(storage).c_str());
-						// WAILA-RAIL-DIAG END
 						continue;
-					}
 					readStorages.push_back(storage);
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("  %s storage %s \"%s\": stock read, %zu item(s) [%s]", upstream ? "upstream" : "downstream",
-						RailDiag::Id(storage).c_str(), nameOf(storage).c_str(), held.size(),
-						upstream ? "all its items can leave on the rail" : "only items the rail carries count");
-					// WAILA-RAIL-DIAG END
 					for (const StoredItemEntry& entry : held)
 					{
 						if (entry.uniqueName.empty() || !carriesItem(entry.uniqueName))
-						{
-							// WAILA-RAIL-DIAG BEGIN
-							RAIL_DIAG_LINE("    stock %s x%lld skipped: %s", entry.uniqueName.c_str(), static_cast<long long>(entry.count),
-								entry.uniqueName.empty() ? "no item name" : "not the rail's filter item");
-							// WAILA-RAIL-DIAG END
 							continue;
-						}
 						if (!upstream && !carried.count(entry.uniqueName))
-						{
-							// WAILA-RAIL-DIAG BEGIN
-							RAIL_DIAG_LINE("    stock %s x%lld skipped: downstream storage, and nothing upstream makes or holds this item",
-								entry.uniqueName.c_str(), static_cast<long long>(entry.count));
-							// WAILA-RAIL-DIAG END
 							continue;
-						}
-						// WAILA-RAIL-DIAG BEGIN
-						RAIL_DIAG_LINE("    stock %s x%lld counted", entry.uniqueName.c_str(), static_cast<long long>(entry.count));
-						// WAILA-RAIL-DIAG END
 						Remember(out, entry.itemData, entry.uniqueName);
 						Cache::Stock& stock = out.stock[entry.uniqueName];
 						stock.count += entry.count;
@@ -635,26 +510,8 @@ namespace Waila
 				if (RailMass::ReadCrafter(machine, crafter) && crafter.isCrafter && crafter.recipe)
 					taker.inputs = InputsOf(crafter.recipe, crafter.speed);
 				taker.requestsRead = RailMass::ReadRequests(machine, taker.requests);
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("  downstream machine %s \"%s\": %zu recipe input(s), %zu request(s) (requests read=%d)",
-					RailDiag::Id(machine).c_str(), nameOf(machine).c_str(), taker.inputs.size(), taker.requests.size(), taker.requestsRead);
-				for (const RailMass::RequestView& request : taker.requests)
-				{
-					std::string runs;
-					for (const RailMass::Delivery& delivery : request.deliveries)
-						runs += " [src " + RailDiag::Id(delivery.source) + " \"" + (delivery.source ? nameOf(delivery.source) : std::string()) +
-							"\" dst " + RailDiag::Id(delivery.destination) + " \"" +
-							(delivery.destination ? nameOf(delivery.destination) : std::string()) + "\"]";
-					RAIL_DIAG_LINE("    request for %s (%s), %zu run(s):%s", Fields::UniqueNameOf(request.wanted).c_str(),
-						request.store ? "store" : "acquire", request.deliveries.size(), runs.c_str());
-				}
-				// WAILA-RAIL-DIAG END
 				if (!taker.inputs.empty() || !taker.requests.empty())
 					takers.push_back(std::move(taker));
-				// WAILA-RAIL-DIAG BEGIN
-				else
-					RAIL_DIAG_LINE("    -> not a taker: no recipe input and no request");
-				// WAILA-RAIL-DIAG END
 			}
 
 			// Cargo Receivers upstream put items on the rail at the rate their
@@ -718,21 +575,6 @@ namespace Waila
 					}
 				}
 
-				// WAILA-RAIL-DIAG BEGIN
-				if (RailDiag::Active())
-				{
-					std::vector<StoredItemEntry> own;
-					const bool ownRead = RailMass::ReadStored(machine, own);
-					std::string items;
-					for (const auto& b : brings)
-						items += " " + b.first;
-					RAIL_DIAG_LINE("  upstream machine %s \"%s\": CARGO RECEIVER (logistics type Producer, no recipe), own inventory %s with %zu item(s), via storage %s, items from %s, brings:%s",
-						RailDiag::Id(machine).c_str(), nameOf(machine).c_str(), ownRead ? "read" : "NOT READ", own.size(),
-						through != attached.upstreamVia.end() ? RailDiag::Id(through->second).c_str() : "none",
-						sent.empty() ? "request/inventory guess (no package link names this receiver)" : "its package links",
-						items.empty() ? " nothing" : items.c_str());
-				}
-				// WAILA-RAIL-DIAG END
 				for (const auto& [unique, item] : brings)
 				{
 					Remember(out, item, unique);
@@ -764,11 +606,6 @@ namespace Waila
 						part.storage = upstreamStorage.count(delivery.source) != 0;
 						if (!part.storage)
 							TakeRate(part, g_rates.Of(delivery.source, true, unique));
-						// WAILA-RAIL-DIAG BEGIN
-						RAIL_DIAG_LINE("  item %s has no maker: source taken from a request, %s %s \"%s\", %s", unique.c_str(),
-							part.storage ? "storage" : "building", RailDiag::Id(delivery.source).c_str(), part.name.c_str(),
-							part.storage ? "stock" : part.unrated ? "no rate (see the package link lines)" : "rated from its package links");
-						// WAILA-RAIL-DIAG END
 						out.parts.push_back(std::move(part));
 						break;
 					}
@@ -801,11 +638,6 @@ namespace Waila
 					}
 					part.now     = !taker.requestsRead ? -1.0f : requesting(item) ? nowPerMin : 0.0f;
 					part.name    = name;
-					// WAILA-RAIL-DIAG BEGIN
-					RAIL_DIAG_LINE("  downstream machine %s \"%s\": TO part, takes %s full=%.2f/min now=%.2f/min%s (requests read=%d, requesting=%d)",
-						RailDiag::Id(taker.machine).c_str(), name.c_str(), item.c_str(), part.full, part.now,
-						part.unrated ? " UNRATED" : "", taker.requestsRead, requesting(item));
-					// WAILA-RAIL-DIAG END
 					out.parts.push_back(std::move(part));
 					taken.insert(item);
 				};
@@ -836,10 +668,6 @@ namespace Waila
 						[&](const RailNetwork::FlowPart& p) { return !p.source && p.building == machine; }))
 					continue;
 				const std::vector<std::string> sends = g_rates.ItemsOf(machine, false);
-				// WAILA-RAIL-DIAG BEGIN
-				RAIL_DIAG_LINE("  downstream machine %s \"%s\": CARGO SENDER (logistics type Consumer, no recipe, no request naming a carried item): %zu carried item(s), %zu of them in its package links",
-					RailDiag::Id(machine).c_str(), nameOf(machine).c_str(), carried.size(), sends.size());
-				// WAILA-RAIL-DIAG END
 				for (const std::string& item : carried)
 				{
 					if (!sends.empty() && std::find(sends.begin(), sends.end(), item) == sends.end())
@@ -893,11 +721,6 @@ namespace Waila
 							RailNetwork::FlowPart part{ delivery.destination, unique, false };
 							part.name    = nameOf(delivery.destination);
 							part.storage = kind->second;
-							// WAILA-RAIL-DIAG BEGIN
-							RAIL_DIAG_LINE("  item %s has no taker: destination taken from a request of machine %s, %s %s \"%s\"", unique.c_str(),
-								RailDiag::Id(machine).c_str(), part.storage ? "storage" : "building", RailDiag::Id(delivery.destination).c_str(),
-								part.name.c_str());
-							// WAILA-RAIL-DIAG END
 							out.parts.push_back(std::move(part));
 						}
 					}
@@ -961,14 +784,7 @@ namespace Waila
 		// rail's numbers for at most one refresh.
 		const auto now = std::chrono::steady_clock::now();
 		const bool fromMass = Features::ShowRailSources() && Features::ShowCrafters();
-		// WAILA-RAIL-DIAG BEGIN
-		const bool diagDump = BeginDiag(actor, fromMass, filterUnique);
-		// WAILA-RAIL-DIAG END
-		if (g_cache.rail != actor || g_cache.fromMass != fromMass || now - g_cache.stamp >= kRefresh
-			// WAILA-RAIL-DIAG BEGIN
-			|| diagDump
-			// WAILA-RAIL-DIAG END
-			)
+		if (g_cache.rail != actor || g_cache.fromMass != fromMass || now - g_cache.stamp >= kRefresh)
 		{
 			g_cache = Cache{};
 			g_cache.rail     = actor;
@@ -981,17 +797,7 @@ namespace Waila
 				g_cache.found = entity && CollectAttached(entity, filterUnique, g_cache);
 				if (g_cache.found && Features::ShowRailCapacity())
 					RailMass::ReadCapacity(entity, g_cache.capacity);
-				// WAILA-RAIL-DIAG BEGIN
-				else
-					RAIL_DIAG_LINE("capacity: not read (rail found=%d, capacity feature %d)", g_cache.found, Features::ShowRailCapacity());
-				// WAILA-RAIL-DIAG END
 			}
-			// WAILA-RAIL-DIAG BEGIN
-			RAIL_DIAG_LINE("Mass walk done: found=%d, linked=%d, %zu part(s), stock items %zu, truncated=%d",
-				g_cache.found, g_cache.linked, g_cache.parts.size(), g_cache.stock.size(), g_cache.truncated);
-			RAIL_DIAG_LINE("loaded-layout fallback %s", !fromMass && Features::ShowDroneRails()
-				? "RUNS (Mass off; it uses the crafters the loaded actors show)" : "does not run");
-			// WAILA-RAIL-DIAG END
 
 			if (!fromMass && Features::ShowDroneRails())
 			{
@@ -1017,63 +823,6 @@ namespace Waila
 						[&](const RailNetwork::FlowPart& p) { return p.item != filterUnique; }), g_cache.parts.end());
 			}
 			g_cache.flows = RailNetwork::SumFlows(g_cache.parts, g_cache.capacity);
-			// WAILA-RAIL-DIAG BEGIN
-			if (RailDiag::Active())
-			{
-				RAIL_DIAG_LINE("flows summed from %zu part(s), capacity %.2f/min (negative = unread):", g_cache.parts.size(), g_cache.capacity);
-				for (const RailNetwork::FlowPart& part : g_cache.parts)
-					RAIL_DIAG_LINE("  part %s %s \"%s\" item %s full=%.2f now=%.2f%s%s", part.source ? "FROM" : "TO  ", RailDiag::Id(part.building).c_str(),
-						part.name.c_str(), part.item.c_str(), part.full, part.now, part.storage ? " [storage]" : "",
-						part.via.empty() ? "" : (" via " + part.via).c_str());
-				// The summary below is a TAIL, which a long walk cannot cut.
-				RAIL_DIAG_TAIL("rail capacity %.2f items/min (negative = unread), starved feeder=%d", g_cache.capacity, g_cache.starvedFeeder);
-				for (const RailNetwork::ItemFlow& flow : g_cache.flows)
-				{
-					int makers = 0, running = 0, takers = 0, requesting = 0;
-					float takeFull = 0.0f, takeNow = 0.0f, outputNow = 0.0f;
-					for (const RailNetwork::FlowPart& part : g_cache.parts)
-					{
-						if (part.item != flow.item || part.storage)
-							continue;
-						if (part.source)
-						{
-							++makers;
-							running += part.now > 0.0f;
-							outputNow += part.now > 0.0f ? part.now : 0.0f;
-							if (part.unrated)
-								RAIL_DIAG_TAIL("  min part %s %llu \"%s\": Cargo Receiver, rate not exposed: counts 0 in min, adds an unknown extra to max and current (+?, or ? with no maker)",
-									flow.item.c_str(), static_cast<unsigned long long>(part.building), part.name.c_str());
-							else
-								RAIL_DIAG_TAIL("  min part %s %llu \"%s\": counts %.2f of full %.2f (%s)", flow.item.c_str(),
-									static_cast<unsigned long long>(part.building), part.name.c_str(),
-									part.full < 0.0f ? -1.0f : part.starved ? 0.0f : part.full, part.full,
-									part.starved ? "starved: missing an input, counts 0" : "has its inputs (running or output full): counts its full rate");
-						}
-						else
-						{
-							if (part.unrated)
-								RAIL_DIAG_TAIL("  taker %s %llu \"%s\": no rate read (Cargo Sender or request-only): counted and named, adds nothing to demand or Short",
-									flow.item.c_str(), static_cast<unsigned long long>(part.building), part.name.c_str());
-							++takers;
-							requesting += part.now > 0.0f;
-							takeFull += part.full > 0.0f ? part.full : 0.0f;
-							takeNow += part.now > 0.0f ? part.now : 0.0f;
-						}
-					}
-					RAIL_DIAG_TAIL("flow %s: makers %d (%d putting out now, output now %.2f, full %.2f), takers %d (%d requesting, take now %.2f, take full %.2f)",
-						flow.item.c_str(), makers, running, outputNow, flow.output, takers, requesting, takeNow, takeFull);
-					RAIL_DIAG_TAIL("flow %s: min=%.2f now=%.2f max=%.2f judged=%d short=%d shortBy=%.2f plusUnknown=%d (now = min(makers' output now capped %.2f, takers' demand now %.2f))",
-						flow.item.c_str(), flow.min, flow.now, flow.max, flow.judged, flow.short_, flow.shortBy, flow.plusUnknown,
-						g_cache.capacity >= 0.0f ? (std::min)(outputNow, g_cache.capacity) : outputNow, takeNow);
-					RAIL_DIAG_TAIL("flow %s: measured flow not read in this build (no drone sampler); the estimate above is not compared", flow.item.c_str());
-				}
-				if (g_cache.flows.empty())
-					RAIL_DIAG_TAIL("no flows: no maker, no storage and no request gave the rail an item");
-				for (const auto& stock : g_cache.stock)
-					RAIL_DIAG_TAIL("stock %s: %lld in %zu storage(s)", stock.first.c_str(), static_cast<long long>(stock.second.count),
-						stock.second.storages.size());
-			}
-			// WAILA-RAIL-DIAG END
 		}
 
 		// One row per item on the rail: its totals, the kinds of building making
@@ -1137,28 +886,6 @@ namespace Waila
 			             : !g_cache.linked ? "Nothing connected"
 			             : "Nothing upstream makes or stores items for this rail";
 
-		// WAILA-RAIL-DIAG BEGIN
-		if (RailDiag::Active())
-		{
-			std::string shorts;
-			for (const RailNetwork::ItemFlow& flow : g_cache.flows)
-				if (flow.short_)
-					shorts += " " + flow.item;
-			RAIL_DIAG_TAIL("dot: %s because %s", outInfo.feed == RailInfo::Feed::Starved ? "RED" : outInfo.feed == RailInfo::Feed::Short ? "YELLOW"
-				: outInfo.feed == RailInfo::Feed::Fed ? "GREEN" : "GREY",
-				outInfo.feed == RailInfo::Feed::Starved ? "a maker feeding the rail is missing items"
-				: outInfo.feed == RailInfo::Feed::Short ? ("takers requesting now are not served, for:" + shorts).c_str()
-				: outInfo.feed == RailInfo::Feed::Fed ? "takers are requesting and every judged item is served" : "no item has a taker to judge");
-			RAIL_DIAG_TAIL("handed to the card: fromCount=%d destCount=%d sourceCount=%d truncated=%d fromMass=%d filter=\"%s\" rows=%zu note=\"%s\"",
-				outInfo.fromCount, outInfo.destCount, outInfo.sourceCount, outInfo.truncated, outInfo.fromMass, outInfo.filterName.c_str(),
-				outInfo.rates.size(), outInfo.note.c_str());
-			for (const RailRateEntry& r : outInfo.rates)
-				RAIL_DIAG_TAIL("  row \"%s\" min=%.2f now=%.2f max=%.2f stored=%lld in \"%s\" from \"%s\" to \"%s\"", r.displayName.c_str(),
-					r.perMinMin, r.perMinNow, r.perMinMax, static_cast<long long>(r.stored), r.storedIn.c_str(), r.from.c_str(), r.to.c_str());
-			RailDiag::Flush();
-		}
-		// WAILA-RAIL-DIAG END
-
 		return true;
 	}
 
@@ -1173,35 +900,7 @@ namespace Waila
 		float  interval  = 0.0f;
 		double serverNow = 0.0;
 		if (RailMass::ReadPackageLinks(links, interval, serverNow))
-		{
 			g_rates.Observe(links, serverNow, interval);
-
-			// WAILA-RAIL-DIAG BEGIN
-			// Every time a connection's rate moves by a quarter or its package size
-			// changes, one line: what the replicator listed then, so a rate that
-			// collapses between two dumps can be traced to its cause.
-			if (RailDiag::g_enabled)
-			{
-				static std::unordered_map<std::string, std::pair<float, int32_t>> logged;   // rate, amount
-				for (const PackageRates::Tracker::Entry& e : g_rates.Entries())
-				{
-					const std::string key = std::to_string(e.link.sender) + "|" + std::to_string(e.link.receiver) + "|" + e.link.item;
-					const auto old = logged.find(key);
-					const bool first   = old == logged.end();
-					const bool moved   = !first && (old->second.second != e.link.amount
-						|| std::fabs(e.perMin - old->second.first) > 0.25f * (std::max)(std::fabs(old->second.first), 1.0f));
-					if (!first && !moved)
-						continue;
-					LOG_INFO("WailaRailDiag[rate] link %llu -> %llu item %s: amount %d start %.2f sends %d gap %.2f rate %.2f/min (was %.2f, amount %d), server now %.2f, interval %.2f%s",
-						static_cast<unsigned long long>(e.link.sender), static_cast<unsigned long long>(e.link.receiver),
-						e.link.item.c_str(), e.link.amount, e.link.start, e.sends, e.gap, e.perMin,
-						first ? -1.0f : old->second.first, first ? 0 : old->second.second, serverNow, interval,
-						e.idle ? " IDLE" : "");
-					logged[key] = { e.perMin, e.link.amount };
-				}
-			}
-			// WAILA-RAIL-DIAG END
-		}
 	}
 
 	void RailDetector::Reset()

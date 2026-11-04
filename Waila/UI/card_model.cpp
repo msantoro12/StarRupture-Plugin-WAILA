@@ -10,9 +10,6 @@
 #include "cargo_sender_detector.h"
 #include "cargo_receiver_detector.h"
 #include "rail_detector.h"
-// WAILA-RAIL-DIAG BEGIN
-#include "rail_diag.h"
-// WAILA-RAIL-DIAG END
 
 #include <algorithm>
 #include <cmath>
@@ -169,8 +166,9 @@ namespace Waila::UI
 
 				// Short when the store can't fund the next cycle and what has been
 				// arriving doesn't make up the difference. A machine stopped for power
-				// or blocked by a full output isn't waiting on its inputs, so none is blamed. Gaps under a tenth of
-				// the need are delivery jitter, not a shortage.
+				// or blocked by a full output isn't waiting on its inputs, so none is
+				// blamed. Gaps under a tenth of the need are delivery jitter, not a
+				// shortage.
 				if (!info.bNoPower && !info.bOutputFull && in.have >= 0 && in.have < in.need && in.arrivalPerMin >= 0.0f)
 				{
 					const float missing = in.perMin - in.arrivalPerMin;
@@ -447,20 +445,6 @@ namespace Waila::UI
 			snprintf(buf, sizeof(buf), "+%d more", static_cast<int>(more));
 			out.footRight = buf;
 		}
-
-		// WAILA-RAIL-DIAG BEGIN
-		if (RailDiag::CardPending())
-		{
-			RAIL_DIAG_CARD("card: header \"%s\", %zu line(s) shown, footer-right \"%s\", note \"%s\" (%s)", out.statusText.c_str(),
-				out.rates.size(), out.footRight.c_str(), out.ratesNote.c_str(),
-				!out.rates.empty() ? "lines shown, no note"
-				: info.fromMass && !info.note.empty() ? "note from RailDetector::GetRailInfo"
-				: "fallback in Card::FromRail: not read from the Mass data, or no note");
-			for (const RateRow& row : out.rates)
-				RAIL_DIAG_CARD("  card line \"%s\"%s", row.name.c_str(), row.icon ? " (icon)" : "");
-			RailDiag::CardDone();
-		}
-		// WAILA-RAIL-DIAG END
 	}
 
 	// -------------------------------------------------------------------------
