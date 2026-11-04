@@ -55,9 +55,6 @@ namespace Waila::PackageRates
 		// One connection's standing.
 		struct Entry
 		{
-			Link  link;
-			float gap      = 0.0f;   // seconds between two sends, measured; 0 until two are seen
-			int32_t sends  = 0;      // distinct send starts seen
 			bool  idle     = false;
 			float perMin   = -1.0f;  // negative: no rate
 			bool  measured = false;
@@ -168,9 +165,6 @@ namespace Waila::PackageRates
 		Entry Describe(const State& state) const
 		{
 			Entry entry;
-			entry.link  = state.link;
-			entry.gap   = state.gap;
-			entry.sends = state.sends;
 			// Never seen sending: nothing says how often it will.
 			const float gap = state.gap > 0.0f ? state.gap : state.sends > 0 ? m_interval : 0.0f;
 			if (gap <= 0.0f)
