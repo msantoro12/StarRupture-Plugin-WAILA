@@ -1173,7 +1173,35 @@ namespace Waila
 		float  interval  = 0.0f;
 		double serverNow = 0.0;
 		if (RailMass::ReadPackageLinks(links, interval, serverNow))
+		{
 			g_rates.Observe(links, serverNow, interval);
+
+			// WAILA-RAIL-DIAG BEGIN
+			// Every time a connection's rate moves by a quarter or its package size
+			// changes, one line: what the replicator listed then, so a rate that
+			// collapses between two dumps can be traced to its cause.
+			if (RailDiag::g_enabled)
+			{
+				static std::unordered_map<std::string, std::pair<float, int32_t>> logged;   // rate, amount
+				for (const PackageRates::Tracker::Entry& e : g_rates.Entries())
+				{
+					const std::string key = std::to_string(e.link.sender) + "|" + std::to_string(e.link.receiver) + "|" + e.link.item;
+					const auto old = logged.find(key);
+					const bool first   = old == logged.end();
+					const bool moved   = !first && (old->second.second != e.link.amount
+						|| std::fabs(e.perMin - old->second.first) > 0.25f * (std::max)(std::fabs(old->second.first), 1.0f));
+					if (!first && !moved)
+						continue;
+					LOG_INFO("WailaRailDiag[rate] link %llu -> %llu item %s: amount %d start %.2f sends %d gap %.2f rate %.2f/min (was %.2f, amount %d), server now %.2f, interval %.2f%s",
+						static_cast<unsigned long long>(e.link.sender), static_cast<unsigned long long>(e.link.receiver),
+						e.link.item.c_str(), e.link.amount, e.link.start, e.sends, e.gap, e.perMin,
+						first ? -1.0f : old->second.first, first ? 0 : old->second.second, serverNow, interval,
+						e.idle ? " IDLE" : "");
+					logged[key] = { e.perMin, e.link.amount };
+				}
+			}
+			// WAILA-RAIL-DIAG END
+		}
 	}
 
 	void RailDetector::Reset()
