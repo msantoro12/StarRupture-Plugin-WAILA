@@ -4,6 +4,7 @@
 #include "Engine_classes.hpp"
 #include "Engine_structs.hpp"
 #include "CoreUObject_structs.hpp"
+#include "Chimera_classes.hpp"
 #include "plugin_map.h"
 
 using namespace SDK;
@@ -126,20 +127,39 @@ namespace Waila::Core
 		FHitResult hitResult;
 		FLinearColor noColor = { 0.f, 0.f, 0.f, 0.f };
 
-		bool bHit = UKismetSystemLibrary::LineTraceSingle(
-			world,
-			startLocation,
-			endLocation,
-			ETraceTypeQuery::TraceTypeQuery1,  // Visibility channel
-			false,                              // bTraceComplex
-			ignoreActors,
-			EDrawDebugTrace::None,
-			&hitResult,
-			true,                              // bIgnoreSelf
-			noColor,
-			noColor,
-			0.f                                // DrawTime
-		);
+		// A drone riding a rail is not what the player aims at: when the trace lands
+		// on one, ignore it and trace again, so the hit falls on the rail behind it.
+		// The bound only guards a rail with a queue of drones in front of the camera.
+		constexpr int kMaxDroneRetraces = 8;
+		bool bHit = false;
+		for (int attempt = 0; attempt <= kMaxDroneRetraces; ++attempt)
+		{
+			hitResult = {};
+			bHit = UKismetSystemLibrary::LineTraceSingle(
+				world,
+				startLocation,
+				endLocation,
+				ETraceTypeQuery::TraceTypeQuery1,  // Visibility channel
+				false,                              // bTraceComplex
+				ignoreActors,
+				EDrawDebugTrace::None,
+				&hitResult,
+				true,                              // bIgnoreSelf
+				noColor,
+				noColor,
+				0.f                                // DrawTime
+			);
+			if (!bHit)
+				break;
+
+			UPrimitiveComponent* hitComp = hitResult.Component.Get();
+			AActor* hitOwner = hitComp ? hitComp->GetOwner() : nullptr;
+			if (!hitOwner || !UKismetSystemLibrary::IsValid(hitOwner) || !hitOwner->IsA(ACrDroneBase::StaticClass()))
+				break;
+			ignoreActors.Add(hitOwner);
+			if (attempt == kMaxDroneRetraces)
+				bHit = false;   // still a drone after the last retrace: no target rather than a drone
+		}
 
 		// Always expose the ray extents so callers can visualise even a no-hit trace
 		outHit.rayStart = startLocation;
