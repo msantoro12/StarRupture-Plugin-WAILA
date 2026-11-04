@@ -452,7 +452,7 @@ namespace
 	}
 
 	// max and min are the makers capped by the rail, whatever the takers want;
-	// now is what moves. The cases are from a captured save.
+	// now is what moves. The cases are from the game.
 	void TestFlowsCapAndMin()
 	{
 		// Six furnaces make 2880 a minute, six takers want 240 in all.
@@ -930,7 +930,7 @@ namespace
 		Tracker tracker;
 		Check(!tracker.Of(receiver, true, "Wolfram").known, "no connections seen: no rate");
 
-		// Listed but never sent: no rate, the reason is in the entry.
+		// Listed but never sent: no rate.
 		link.start = 0.0f;
 		tracker.Observe({ link }, 100.0, 5.0f);
 		Rate rate = tracker.Of(receiver, true, "Wolfram");

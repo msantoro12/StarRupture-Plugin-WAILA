@@ -768,8 +768,8 @@ namespace Waila::RailNetwork
 		std::string name;               // the building's name, which the From/To lines group by
 		bool        storage = false;    // storage: it holds the item, it neither makes nor takes it
 		std::string via;                // a source: the name of the storage its items reach the rail through
-		bool        unrated = false;    // a source or consumer with no rate to read (a Cargo Receiver or Sender):
-		                                // it is counted and named but adds to no total
+		bool        unrated = false;    // a source or consumer with no rate to read (a Cargo Receiver or Sender
+		                                // not yet seen sending): it is counted and named but adds to no total
 		float       stock   = 0.0f;     // storage: how many of the item it holds
 		bool        starved = false;    // a source: missing an input of its own and not output full
 	};
@@ -799,20 +799,20 @@ namespace Waila::RailNetwork
 	// put out right now (capped, and 0 for a source that is stalled) and what
 	// the consumers requesting right now want. min and max never depend on the
 	// consumers. A source whose rate is unread leaves the item's figures
-	// unknown; a consumer whose request is unread leaves now unknown. An
-	// unrated part (a Cargo Receiver or Sender) is counted but adds to no total.
-	// A Cargo Receiver is a source whose rate the game does not expose: it
-	// counts 0 in min, and in max and now it is an unknown extra, so with
-	// makers they read as the makers' part with plusUnknown set, and with no
-	// maker at all max and now are unknown (negative) while min is 0.
+	// unknown; a consumer whose request is unread leaves now unknown. A Cargo
+	// Receiver or Sender with a measured rate counts like any maker or taker. An
+	// unrated part (one never seen sending) is counted but adds to no total: an
+	// unrated receiver counts 0 in min, and in max and now it is an unknown
+	// extra, so with makers they read as the makers' part with plusUnknown set,
+	// and with no maker at all max and now are unknown (negative) while min is 0.
 	//
 	// short_ is set when the consumers requesting the item right now are not
 	// served, and shortBy is by how much. It is only judged (and only means
 	// something) when a consumer takes the item and every figure it needs is
 	// read. For an item some building makes it means max is below what they
 	// take; with a receiver bringing more it means they take more than the rail
-	// carries. An item only storage holds or a Cargo Receiver brings has no
-	// rate to judge by: it is short when consumers request it and the storage
+	// carries. An item only storage holds or an unrated Cargo Receiver brings has
+	// no rate to judge by: it is short when consumers request it and the storage
 	// holds none of it and no receiver brings it.
 	inline std::vector<ItemFlow> SumFlows(const std::vector<FlowPart>& parts, float capacity)
 	{

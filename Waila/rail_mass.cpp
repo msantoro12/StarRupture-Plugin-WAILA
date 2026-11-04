@@ -375,7 +375,7 @@ namespace Waila::RailMass
 		// A building of the type that makes and takes is storage when it has no
 		// recipe to run and keeps an inventory: items rest there, and the rails
 		// out of it carry what the rails into it brought (INFERRED from the
-		// depots in captured saves, which were type 2 with no recipe).
+		// depots seen in the game, which were type 2 with no recipe).
 		bool HoldsStockOnly(const void* manager, Entity building)
 		{
 			CrafterState crafter;
