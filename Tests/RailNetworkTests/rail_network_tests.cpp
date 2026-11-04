@@ -976,6 +976,24 @@ namespace
 		tracker.Observe({ other }, 144.0, 5.0f);
 		Check(!tracker.Of(receiver, true, "Wolfram").links, "a dropped connection is forgotten");
 
+		// The replicator reads the start as -1 between two sends (the gss.33 log:
+		// every next send came out with gap = start + 1, 0.14 items a minute).
+		// The last real start stays, so the next send is timed from it, and the
+		// connection does not read as stopped while it waits.
+		Tracker held;
+		link.start = 200.0f;
+		held.Observe({ link }, 200.5, 5.0f);
+		link.start = 205.0f;
+		held.Observe({ link }, 205.5, 5.0f);
+		link.start = -1.0f;
+		held.Observe({ link }, 207.0, 5.0f);
+		rate = held.Of(receiver, true, "Wolfram");
+		Check(Near(rate.full, 120.0f) && Near(rate.now, 120.0f), "a start read as -1 keeps the rate and does not idle it");
+		link.start = 210.0f;
+		held.Observe({ link }, 210.5, 5.0f);
+		rate = held.Of(receiver, true, "Wolfram");
+		Check(rate.known && Near(rate.full, 120.0f) && rate.measured == 1, "the send after a -1 read is timed from the last real start");
+
 		tracker.Clear();
 		Check(tracker.Entries().empty(), "cleared");
 	}

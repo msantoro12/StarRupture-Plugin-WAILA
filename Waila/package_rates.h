@@ -87,7 +87,14 @@ namespace Waila::PackageRates
 						state.gap = link.start - state.link.start;
 					++state.sends;
 				}
+				// The replicator reads a connection's start as -1 at times between
+				// two sends; the last real start stays, or the next send would be
+				// timed from -1 (a gap of the whole server time, a rate near 0)
+				// and the idle check would read the connection as stopped.
+				const float lastStart = state.link.start;
 				state.link = link;
+				if (link.start <= 0.0f && lastStart > 0.0f)
+					state.link.start = lastStart;
 				next[key]  = std::move(state);
 			}
 			m_states = std::move(next);
