@@ -129,13 +129,11 @@ namespace Waila::UI
 			{
 				UnregisterMainWidget();
 
-				// The published model holds texture handles Icons is about to free,
-				// so it has to go first.
+				// No stale card after a reload.
 				{
 					std::lock_guard<std::mutex> lock(m_infoMutex);
 					m_pendingCard.Clear();
 				}
-				Waila::UI::Icons::Shutdown();
 				Waila::RailDetector::Reset();
 
 				m_self->hooks->UI->UnregisterOnConfigChanged(m_self, &OnConfigChanged);
@@ -341,12 +339,9 @@ namespace Waila::UI
 			}
 		}
 
-		// Retry any icons the GPU wasn't ready for on an earlier frame.
-		Waila::UI::Icons::Tick();
-
 		// Fold whatever was detected into the card model. This is the only place
 		// engine pointers are read for display — everything downstream of here is
-		// strings and texture handles, so the render thread can never chase an
+		// strings and image ids, so the render thread can never chase an
 		// actor that has since been destroyed.
 		Waila::UI::CardModel card;
 		if (info.IsValid())                   Waila::UI::Card::FromCrafter(info, card);
