@@ -52,9 +52,9 @@ namespace Waila::UI
 		IPluginImages* images = Images();
 		if (!images)
 		{
-			// Server / generic build, or a loader without the image library —
+			// Server / generic build, or a loader without the image library, so
 			// the cards draw without images.
-			LOG_WARN("WAILA Icons: image library unavailable — icons disabled.");
+			LOG_WARN("WAILA Icons: image library unavailable, icons disabled.");
 			return;
 		}
 

@@ -15,7 +15,7 @@
   - **Cargo Receivers** — incoming cargo state
   - **Drone Rails** — what the machines attached to a rail's network make and take, read from the game's drone logistics, so it works with nothing moving and along the whole line, out of render range too. See [Rail card](#rail-card) <sup>[✦](#msantoro12)</sup>
 - Configurable max detection distance, card scale/opacity, and optional building descriptions
-- Item, recipe and building icons come from the ModLoader's image library, which keeps one small copy of each image for every mod. A card keeps its layout while an icon is still loading, and on a loader without the image library the cards work and show a placeholder where each icon would be
+- Item, recipe and building icons come from the ModLoader's image library, which keeps one small copy of each image for every mod. A card keeps its layout while an icon is still loading
 - Thread-safe: game tick and ImGui render thread are fully decoupled via mutex
 
 ## Rail card <sup>[✦](#msantoro12)</sup>
@@ -45,7 +45,7 @@ A card shows up to twelve rows, and a long From, To or Stored row can take up to
 - Visual Studio 2022 (MSVC v143, C++20)
 - [StarRupture-Game-SDK](https://github.com/AlienXAXS/StarRupture-Game-SDK)
 - [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK)
-- StarRupture with ModLoader v1.23.0 or later installed
+- StarRupture with ModLoader v1.24.0 or later installed
 
 ## Building
 
