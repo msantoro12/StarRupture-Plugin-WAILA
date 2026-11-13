@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "plugin_images.h"
+
 namespace Waila::UI
 {
 	namespace
@@ -50,8 +52,8 @@ namespace Waila::UI
 		constexpr float  kStockTileMax = kStatRingD;
 
 		// Rate body: a line of text each, the item's lines under its icon and name.
-		constexpr float kRateRowH   = 26.0f;
-		constexpr float kRateIcon   = 22.0f;
+		constexpr float kRateRowH   = 32.0f;
+		constexpr float kRateIcon   = PluginImages::kMinSize;
 		constexpr float kRateGap    = 10.0f;
 		constexpr float kRateBullet = 2.0f;    // radius of the bullet in front of a detail line
 		constexpr float kRateContH  = 17.0f;   // a wrapped line's continuation
