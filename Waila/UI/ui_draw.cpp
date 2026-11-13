@@ -1,6 +1,7 @@
 #include "ui_draw.h"
 #include "plugin_helpers.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -92,10 +93,17 @@ namespace Waila::UI
 	void Draw::IconBare(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r,
 	                    PluginImageId image, const Palette& pal, float alpha)
 	{
-		// Get is valid for this frame only: it goes straight into the draw list
-		// and is never kept.
+		// GetSized is valid for this frame only: it goes straight into the draw
+		// list and is never kept. Once the loader has a copy made for this size
+		// it is the copy, to be drawn 1:1 into the same rectangle; until then it
+		// is the stored picture, scaled into it.
 		IPluginHooks*       hooks = GetHooks();
-		PluginTextureHandle tex   = (image && hooks && hooks->Images) ? hooks->Images->Get(image) : nullptr;
+		PluginTextureHandle tex   = nullptr;
+		if (image && hooks && hooks->Images)
+		{
+			const float longer = (std::max)(r.x1 - r.x0, r.y1 - r.y0);
+			tex = hooks->Images->GetSized(image, static_cast<int>(longer + 0.5f), nullptr, nullptr);
+		}
 		if (tex)
 		{
 			ui->DL_AddImage(dl, tex, r.x0, r.y0, r.x1, r.y1, 0.0f, 0.0f, 1.0f, 1.0f,

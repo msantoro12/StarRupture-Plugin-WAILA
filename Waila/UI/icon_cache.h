@@ -18,7 +18,7 @@ namespace Waila::UI
 	// WAILA already holds the exact building, recipe and item objects it needs
 	// icons for, so each brush's texture is handed to the library the moment it
 	// is read and only the library's integer id is kept. The render callback
-	// turns that id into a texture with hooks->Images->Get.
+	// turns that id into a texture with hooks->Images->GetSized.
 	//
 	// Game thread only. Call these during Tick when the card model is built,
 	// never from a render callback. 0 means no image.
