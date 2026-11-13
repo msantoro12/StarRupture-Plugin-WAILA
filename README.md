@@ -28,7 +28,7 @@ Aim at a drone rail and the card shows what travels along it, item by item. WAIL
 - **red** when a machine feeding the rail is starved, short of an input. That machine's name on the From line is drawn in red; a kind with both starved and running machines is split, so only the starved ones are red ("Furnace v.2" red, "2x Furnace v.2" plain);
 - **grey** when there is nothing to judge, for example nothing takes from the rail.
 
-**Each item** shows its icon and name, then a bulleted line each for:
+**Each item** shows its icon and name (Ammo and each blueprint count as separate items), then a bulleted line each for:
 - **From** and **To**: the buildings making and taking it, buildings of one kind together with their count, the biggest kind first ("From 2x Fabricator v.2, Furnace"; at most three kinds, then "+N more"). A long line continues on the next one. A machine filling a depot reads "From 4x Assembler via Storage Depot v.2", and machines taking from a depot are listed as takers. An item only a depot holds reads "From Storage Depot v.2". A Cargo Receiver is listed as a source ("From Cargo Receiver") and a Cargo Sender as a taker, each counted for what its connections put on the rail or take off it (see below);
 - **Stored**: what the storage on the network holds of it ("Stored 18.6k in 3x Storage Depot v.2"), and "Stored 0 in Storage Depot v.2" when the storage on the line is empty of it;
 

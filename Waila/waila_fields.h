@@ -249,10 +249,17 @@ namespace Waila::Fields
 	}
 
 	// An item's unique name and its localized name. Empty when unresolved.
+	// Ammo and the blueprint items leave UniqueItemName unset ("None"); they are
+	// named by the item object instead, so callers that key on this name keep
+	// them apart.
 	inline std::string UniqueNameOf(const SDK::UAuItemDataBase* item)
 	{
 		const SDK::FName* name = UniqueItemName.In(static_cast<const void*>(item));
-		return name ? name->ToString() : std::string();
+		if (!name)
+			return std::string();
+
+		std::string unique = name->ToString();
+		return unique == "None" ? item->GetName() : unique;
 	}
 
 	inline std::string DisplayNameOf(const SDK::UAuItemDataBase* item)
