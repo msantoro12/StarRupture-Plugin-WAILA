@@ -418,7 +418,8 @@ namespace Waila::UI
 			if (aw > 0.f && ah > 0.f)
 				imgui->Dummy(aw, ah);
 
-			// The game thread sizes the window from the font the last frame drew with.
+			// The game thread sizes the window from the font the last frame drew with, so the
+			// first frame of a card shown after a font change is measured at the old font.
 			m_fontSize.store(imgui->GetFontSize());
 
 			const Waila::UI::Palette pal = Waila::UI::Theme::Build(card.accent, m_opacity);

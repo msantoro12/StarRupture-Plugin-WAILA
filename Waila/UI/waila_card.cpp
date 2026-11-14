@@ -481,11 +481,21 @@ namespace Waila::UI
 		const IconScale ic{ scale, fontSize };
 		const FlowMetrics f = MeasureFlow(model, ic);
 
-		const float bodyW = model.hasFlow  ? FlowGroupWidth(model, f)
-		                 : model.hasRates ? RateBodyWidth(model, ic)
-		                 : StatBodyWidth(model, ic);
-		const float baseW = Clamp((std::max)(bodyW, HeaderWidth(model)) + kPadX * 2.0f,
-		                          kCardMinW, kCardMaxW);
+		const auto bodyWidth = [&model](const IconScale& at, const FlowMetrics& fm)
+		{
+			return model.hasFlow  ? FlowGroupWidth(model, fm)
+			     : model.hasRates ? RateBodyWidth(model, at)
+			     : StatBodyWidth(model, at);
+		};
+
+		// Icons that grow with the font widen the body, so the cap grows by the same
+		// amount; otherwise a large font pushes the equation past the window edge.
+		const IconScale base{ scale, PluginImages::kDefaultFontSize };
+		const float grown = bodyWidth(ic, f) - bodyWidth(base, MeasureFlow(model, base));
+		const float maxW  = kCardMaxW + (std::max)(0.0f, grown);
+
+		const float baseW = Clamp((std::max)(bodyWidth(ic, f), HeaderWidth(model)) + kPadX * 2.0f,
+		                          kCardMinW, maxW);
 
 		float h = kStrip + kHeaderH;
 
