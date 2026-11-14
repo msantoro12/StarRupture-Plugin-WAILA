@@ -24,13 +24,13 @@ namespace Waila::UI
 
 		// Square icon slot. Draws the library image `image` when it is ready and a
 		// tinted placeholder when it is not, so the layout never jumps while
-		// images stream in.
-		void IconTile(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r,
+		// images stream in. px is the image's size in whole screen pixels.
+		void IconTile(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r, int px,
 		              PluginImageId image, const Palette& pal, float rounding,
 		              float alpha, bool drawSlot);
 
 		// Bare image with no slot behind it — for the building icon inside the ring.
-		void IconBare(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r,
+		void IconBare(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r, int px,
 		              PluginImageId image, const Palette& pal, float alpha);
 
 		// Quantity tucked into an icon tile's bottom-right corner, the way an

@@ -73,7 +73,7 @@ namespace Waila::UI
 			thickness * 0.62f, Theme::Pack(fill), 12);
 	}
 
-	void Draw::IconTile(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r,
+	void Draw::IconTile(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r, int px,
 	                    PluginImageId image, const Palette& pal, float rounding,
 	                    float alpha, bool drawSlot)
 	{
@@ -87,10 +87,10 @@ namespace Waila::UI
 				PluginDrawFlags_RoundCornersAll, 1.0f);
 		}
 
-		IconBare(ui, dl, r, image, pal, alpha);
+		IconBare(ui, dl, r, px, image, pal, alpha);
 	}
 
-	void Draw::IconBare(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r,
+	void Draw::IconBare(IModLoaderImGui* ui, PluginDrawList dl, const Rect& r, int px,
 	                    PluginImageId image, const Palette& pal, float alpha)
 	{
 		// GetSized is valid for this frame only: it goes straight into the draw
@@ -101,12 +101,7 @@ namespace Waila::UI
 		PluginTextureHandle tex   = nullptr;
 		if (image && hooks && hooks->Images)
 		{
-			// The size is the difference of two screen coordinates, which carries a
-			// rounding error that depends on where the card sits (about 1e-4 px).
-			// The margin on the half keeps a size ending in .5 asking for the same
-			// whole number wherever the card is, instead of flipping between two.
-			const float longer = (std::max)(r.x1 - r.x0, r.y1 - r.y0);
-			tex = hooks->Images->GetSized(image, static_cast<int>(longer + 0.51f), nullptr, nullptr);
+			tex = hooks->Images->GetSized(image, px, nullptr, nullptr);
 		}
 		if (tex)
 		{

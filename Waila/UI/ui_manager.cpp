@@ -358,7 +358,7 @@ namespace Waila::UI
 		if (hasCard)
 		{
 			float cardW = 0.f, cardH = 0.f;
-			Waila::UI::Card::Measure(card, m_scale, cardW, cardH);
+			Waila::UI::Card::Measure(card, m_scale, m_fontSize.load(), cardW, cardH);
 			UpdateWindowHints(cardW, cardH);
 		}
 
@@ -417,6 +417,9 @@ namespace Waila::UI
 			imgui->GetContentRegionAvail(&aw, &ah);
 			if (aw > 0.f && ah > 0.f)
 				imgui->Dummy(aw, ah);
+
+			// The game thread sizes the window from the font the last frame drew with.
+			m_fontSize.store(imgui->GetFontSize());
 
 			const Waila::UI::Palette pal = Waila::UI::Theme::Build(card.accent, m_opacity);
 			const Waila::UI::Rect    rect{ wx, wy, wx + ww, wy + wh };
